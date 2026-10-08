@@ -14,6 +14,7 @@ public class TallyAIPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "breakDownTask", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "interpretReminder", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "explainFocus", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "explainPlan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancel", returnType: CAPPluginReturnPromise),
     ]
 
@@ -68,6 +69,18 @@ public class TallyAIPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         run(call) { engine in
             ["summary": try await engine.explain(facts: facts)]
+        }
+    }
+
+    // Phrases a short summary of an already-built daily plan. Times and order
+    // come from JavaScript; the model never changes them.
+    @objc func explainPlan(_ call: CAPPluginCall) {
+        guard let facts = call.getString("facts") else {
+            call.reject("Plan facts are required", "invalid_input")
+            return
+        }
+        run(call) { engine in
+            ["summary": try await engine.explain(facts: facts, kind: .plan)]
         }
     }
 
