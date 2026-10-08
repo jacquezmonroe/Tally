@@ -12,6 +12,8 @@ enum TallyStepCleaner {
     static let maxTitleLength = 200
     static let maxRequestLength = 300
     static let maxFragmentLength = 80
+    static let maxFactsLength = 1500
+    static let maxSummaryLength = 240
 
     private static func collapse(_ text: String) -> String {
         text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
@@ -38,6 +40,24 @@ enum TallyStepCleaner {
     static func cleanFragment(_ raw: String) -> String {
         let text = collapse(raw)
         return text.count > maxFragmentLength ? String(text.prefix(maxFragmentLength)).trimmingCharacters(in: .whitespaces) : text
+    }
+
+    /// The ranked-task facts sent to the model: each line whitespace-collapsed,
+    /// blank lines dropped. nil if there is nothing or it is too long.
+    static func cleanFacts(_ raw: String) -> String? {
+        let lines = raw.split(separator: "\n").map { collapse(String($0)) }.filter { !$0.isEmpty }
+        let facts = lines.joined(separator: "\n")
+        guard !facts.isEmpty, facts.count <= maxFactsLength else { return nil }
+        return facts
+    }
+
+    /// The model's summary sentence: collapsed, surrounding quotes removed.
+    /// nil if empty or too long (the app then writes its own sentence).
+    static func cleanSummary(_ raw: String) -> String? {
+        let quotes = CharacterSet(charactersIn: "\"'\u{201C}\u{201D}\u{2018}\u{2019}")
+        let summary = collapse(raw).trimmingCharacters(in: quotes).trimmingCharacters(in: .whitespaces)
+        guard !summary.isEmpty, summary.count <= maxSummaryLength else { return nil }
+        return summary
     }
 
     /// Model output -> display-ready steps: trimmed, list markers removed,

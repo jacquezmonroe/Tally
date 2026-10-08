@@ -23,6 +23,16 @@ expect(TallyStepCleaner.cleanFragment("") == "", "empty fragment allowed")
 expect(TallyStepCleaner.cleanFragment("  next   Friday ") == "next Friday", "fragment whitespace collapsed")
 expect(TallyStepCleaner.cleanFragment(String(repeating: "x", count: 200)).count == TallyStepCleaner.maxFragmentLength, "long fragment shortened")
 
+// Focus facts and summary
+expect(TallyStepCleaner.cleanFacts("") == nil, "empty facts rejected")
+expect(TallyStepCleaner.cleanFacts(" \n  \n") == nil, "blank-line facts rejected")
+expect(TallyStepCleaner.cleanFacts(String(repeating: "a", count: 1501)) == nil, "over-long facts rejected")
+expect(TallyStepCleaner.cleanFacts("1.  Call   Mom\n\n2. Water plants") == "1. Call Mom\n2. Water plants", "facts lines collapsed")
+expect(TallyStepCleaner.cleanSummary("  \"Start with Call Mom.\"  ") == "Start with Call Mom.", "summary quotes stripped")
+expect(TallyStepCleaner.cleanSummary("") == nil, "empty summary rejected")
+expect(TallyStepCleaner.cleanSummary(String(repeating: "x", count: 241)) == nil, "over-long summary rejected")
+expect(TallyStepCleaner.cleanSummary(String(repeating: "x", count: 240)) != nil, "240-char summary accepted")
+
 // Steps
 expect(TallyStepCleaner.cleanSteps(["1. Outline sections", "2) Gather projects", "- Build layout"])
     == ["Outline sections", "Gather projects", "Build layout"], "list markers stripped")

@@ -13,6 +13,7 @@ public class TallyAIPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "availability", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "breakDownTask", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "interpretReminder", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "explainFocus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancel", returnType: CAPPluginReturnPromise),
     ]
 
@@ -55,6 +56,18 @@ public class TallyAIPlugin: CAPPlugin, CAPBridgedPlugin {
                 "timeText": parts.timeText,
                 "repeatText": parts.repeatText,
             ]
+        }
+    }
+
+    // Phrases a short summary of an already-ranked list. The ranking itself is
+    // computed in JavaScript and is never changed by the model.
+    @objc func explainFocus(_ call: CAPPluginCall) {
+        guard let facts = call.getString("facts") else {
+            call.reject("Ranked facts are required", "invalid_input")
+            return
+        }
+        run(call) { engine in
+            ["summary": try await engine.explain(facts: facts)]
         }
     }
 
