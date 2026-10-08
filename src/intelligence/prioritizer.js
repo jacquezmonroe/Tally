@@ -145,8 +145,8 @@ export function focusFacts(ranked) {
 
 export const MAX_SUMMARY_LENGTH = 240;
 
-// The model's sentence is only used if it adds nothing new: no digits that
-// aren't in the facts it was given, no links, and a sensible length.
+// The model's sentence is only used if it adds nothing new: no digits or
+// clock times that aren't in the facts it was given, no links, and a sensible length.
 // -> { ok: true, text } | { ok: false }
 export function validateSummary(raw, facts) {
   if (typeof raw !== 'string') return { ok: false };
@@ -156,6 +156,11 @@ export function validateSummary(raw, facts) {
   const known = new Set(String(facts).match(/\d+/g) || []);
   for (const token of text.match(/\d+/g) || []) {
     if (!known.has(token)) return { ok: false };
+  }
+  // A clock time like 2:15 must appear exactly in the facts, not just be built from digits that do.
+  const knownTimes = new Set(String(facts).match(/\b\d{1,2}:\d{2}\b/g) || []);
+  for (const time of text.match(/\b\d{1,2}:\d{2}\b/g) || []) {
+    if (!knownTimes.has(time)) return { ok: false };
   }
   return { ok: true, text };
 }

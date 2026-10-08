@@ -71,7 +71,10 @@
       <button type="button" role="tab" class="view-tab" data-view="done" aria-selected="false">Done</button>
     </div>
 
-    <button type="button" id="focusBtn" class="focus-btn" hidden>What should I focus on today?</button>
+    <div id="todayActions" class="today-actions" hidden>
+      <button type="button" id="focusBtn" class="focus-btn">What should I focus on today?</button>
+      <button type="button" id="planBtn" class="focus-btn">Plan my day</button>
+    </div>
 
     <div id="emptyState" class="empty-state" hidden>
       <p id="emptyStateMessage"></p>
@@ -243,6 +246,40 @@
       <p id="focusSource" class="focus-source" hidden>Phrased on this iPhone. The order comes from your deadlines and settings.</p>
       <ol id="focusList" class="focus-list" aria-label="Tasks, most important first"></ol>
       <p class="fullscreen-sub">Ranked by what's overdue or due soon, one-time reminders, streaks you'd keep going, steps you've started, and the importance you set. Change a task's importance to re-rank.</p>
+    </div>
+  </div>
+
+  <div id="planScreen" class="fullscreen-overlay" hidden>
+    <div class="fullscreen-card">
+      <div class="screen-header">
+        <button type="button" id="planBackBtn" class="btn-back" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <h2>Plan my day</h2>
+      </div>
+      <div id="planScopes" class="chips" role="group" aria-label="What to plan">
+        <button type="button" class="chip" data-scope="rest">Rest of today</button>
+        <button type="button" class="chip" data-scope="morning">Morning</button>
+        <button type="button" class="chip" data-scope="afternoon">Afternoon</button>
+        <button type="button" class="chip" data-scope="evening">Evening</button>
+      </div>
+      <div class="plan-window">
+        <label class="plan-window-field">From <input type="time" id="planStart"></label>
+        <label class="plan-window-field">To <input type="time" id="planEnd"></label>
+      </div>
+      <p class="fullscreen-sub">Tally only plans inside this window. It doesn't know your calendar or when you're free, so change it to fit your day.</p>
+      <p id="planSummary" class="focus-summary" role="status" aria-live="polite"></p>
+      <p id="planSource" class="focus-source" hidden>Phrased on this iPhone. Times come from your reminders and the estimates below.</p>
+      <ol id="planBlocks" class="plan-blocks" aria-label="Planned tasks in order"></ol>
+      <div id="planUnscheduled" hidden>
+        <p class="field-label">Not in the plan</p>
+        <ul id="planUnscheduledList" class="plan-unscheduled"></ul>
+      </div>
+      <div class="detail-actions">
+        <button type="button" id="planSaveBtn" class="btn-add">Save plan</button>
+        <button type="button" id="planDiscardBtn" class="btn-outline" hidden>Discard saved plan</button>
+      </div>
+      <p class="fullscreen-sub">Lengths are estimates you can change. Saving only stores this plan on your iPhone: your reminders and their notifications don't change.</p>
     </div>
   </div>
 

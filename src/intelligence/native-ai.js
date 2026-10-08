@@ -60,6 +60,15 @@ export function createNativeAI(plugin) {
       }
     },
 
+    // -> { summary } (unvalidated); rejects like breakDownTask.
+    async explainPlan(facts) {
+      try {
+        return await plugin.explainPlan({ facts });
+      } catch (e) {
+        throw normalizeError(e);
+      }
+    },
+
     async cancel() {
       try {
         await plugin.cancel();

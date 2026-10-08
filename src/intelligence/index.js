@@ -12,6 +12,7 @@
 import { validateTitle, validateSteps, validateRequest } from './validation.js';
 import { parseReminderRequest, needsInterpretation, draftFromParts } from './understand.js';
 import { focusSummary, focusFacts, validateSummary } from './prioritizer.js';
+import { planSummary, planFacts } from './planner.js';
 import { unavailableMessage, errorMessage } from './fallback.js';
 
 // Shown when the model was tried but couldn't help; the rules' draft is used.
@@ -22,6 +23,31 @@ export function createIntelligence({ native }) {
 
   const unavailable = (reason) => ({ status: 'unavailable', reason, message: unavailableMessage(reason) });
   const failure = (code) => ({ status: 'error', code, message: errorMessage(code) });
+
+  // Shared by the summaries: plain sentence first, model phrasing only if it
+  // is available, not busy, and passes validation against `facts`.
+  async function phrase({ plain, facts, ask }) {
+    const fallback = { status: 'ok', summary: plain, usedAI: false };
+    if (!facts || inFlight) return fallback; // nothing worth phrasing, or the model is busy
+
+    const job = { cancelled: false };
+    inFlight = job;
+    try {
+      const availability = await native.availability();
+      if (job.cancelled) return { status: 'cancelled' };
+      if (!availability.available) return fallback;
+
+      const result = await ask(facts);
+      if (job.cancelled) return { status: 'cancelled' };
+      const checked = validateSummary(result?.summary, facts);
+      return checked.ok ? { status: 'ok', summary: checked.text, usedAI: true } : fallback;
+    } catch (e) {
+      if (job.cancelled || e?.code === 'cancelled') return { status: 'cancelled' };
+      return fallback;
+    } finally {
+      if (inFlight === job) inFlight = null;
+    }
+  }
 
   return {
     get isBusy() {
@@ -99,31 +125,26 @@ export function createIntelligence({ native }) {
 
     // A short summary of an already-ranked focus list. The order is decided by
     // rules (prioritizer.js) and is never touched here. The model may only
-    // phrase it, and its sentence is used only if it introduces no number that
-    // isn't in the facts it was given; otherwise the plain sentence is used.
-    // Always resolves with text. -> { status: 'ok', summary, usedAI } | { status: 'cancelled' }
-    async summarizeFocus(ranked) {
-      const plain = { status: 'ok', summary: focusSummary(ranked), usedAI: false };
-      if (ranked.length < 2 || inFlight) return plain; // one task needs no explaining
+    // phrase it, and its sentence is used only if it introduces no number or
+    // clock time that isn't in the facts it was given; otherwise the plain
+    // sentence is used. Always resolves with text.
+    // -> { status: 'ok', summary, usedAI } | { status: 'cancelled' }
+    summarizeFocus(ranked) {
+      return phrase({
+        plain: focusSummary(ranked),
+        facts: ranked.length >= 2 ? focusFacts(ranked) : null,
+        ask: facts => native.explainFocus(facts),
+      });
+    },
 
-      const facts = focusFacts(ranked);
-      const job = { cancelled: false };
-      inFlight = job;
-      try {
-        const availability = await native.availability();
-        if (job.cancelled) return { status: 'cancelled' };
-        if (!availability.available) return plain;
-
-        const result = await native.explainFocus(facts);
-        if (job.cancelled) return { status: 'cancelled' };
-        const checked = validateSummary(result?.summary, facts);
-        return checked.ok ? { status: 'ok', summary: checked.text, usedAI: true } : plain;
-      } catch (e) {
-        if (job.cancelled || e?.code === 'cancelled') return { status: 'cancelled' };
-        return plain;
-      } finally {
-        if (inFlight === job) inFlight = null;
-      }
+    // The same for a daily plan: the blocks and times come from planner.js;
+    // the model may only phrase a sentence about them.
+    summarizePlan(plan) {
+      return phrase({
+        plain: planSummary(plan),
+        facts: plan.blocks.length >= 2 ? planFacts(plan) : null,
+        ask: facts => native.explainPlan(facts),
+      });
     },
 
     // Stops waiting for the current request and asks the native side to stop.

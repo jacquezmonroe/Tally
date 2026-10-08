@@ -38,6 +38,20 @@ import {
 } from './settings.js';
 import { intelligence } from './intelligence/default.js';
 import { applyAnswer, reminderCount, numberedNames, timeValue } from './intelligence/understand.js';
+import {
+  windowFor,
+  buildPlan,
+  setBlockMinutes,
+  moveBlock,
+  removeBlock,
+  addUnscheduled,
+  planSummary,
+  toStoredPlan,
+  fromStoredPlan,
+  formatMinutes,
+  formatDuration,
+  DURATION_OPTIONS,
+} from './intelligence/planner.js';
 import { rankFocus, focusSummary, withImportance, normalizeImportance, IMPORTANCE_LEVELS } from './intelligence/prioritizer.js';
 import {
   getSubtasks,
@@ -61,6 +75,7 @@ const ACCENT_THEME_KEY = 'tally-accent-theme';
 const APPEARANCE_KEY = 'tally-appearance';
 const REMINDER_DEFAULTS_KEY = 'tally-reminder-defaults';
 const QUIET_HOURS_KEY = 'tally-quiet-hours';
+const PLAN_KEY = 'tally-plan';
 const GREETING_STYLE_KEY = 'tally-greeting-style';
 
 let reminders = [];
@@ -97,6 +112,20 @@ const micBtn = document.getElementById('micBtn');
 const importanceInput = document.getElementById('importanceInput');
 const editImportanceInput = document.getElementById('editImportanceInput');
 const focusBtn = document.getElementById('focusBtn');
+const todayActions = document.getElementById('todayActions');
+const planBtn = document.getElementById('planBtn');
+const planScreen = document.getElementById('planScreen');
+const planBackBtn = document.getElementById('planBackBtn');
+const planScopesEl = document.getElementById('planScopes');
+const planStartInput = document.getElementById('planStart');
+const planEndInput = document.getElementById('planEnd');
+const planSummaryEl = document.getElementById('planSummary');
+const planSourceEl = document.getElementById('planSource');
+const planBlocksEl = document.getElementById('planBlocks');
+const planUnscheduledEl = document.getElementById('planUnscheduled');
+const planUnscheduledListEl = document.getElementById('planUnscheduledList');
+const planSaveBtn = document.getElementById('planSaveBtn');
+const planDiscardBtn = document.getElementById('planDiscardBtn');
 const focusScreen = document.getElementById('focusScreen');
 const focusBackBtn = document.getElementById('focusBackBtn');
 const focusSummaryEl = document.getElementById('focusSummary');
@@ -1261,7 +1290,7 @@ function render({ animateEntrance = false } = {}) {
   renderGreeting();
   updateBadge();
   updateAllDoneBanner();
-  focusBtn.hidden = !(activeView === 'today' && getPendingToday(reminders).length > 0);
+  todayActions.hidden = !(activeView === 'today' && getPendingToday(reminders).length > 0);
 
   const visible = remindersForView();
   const emptyMessage = reminders.length === 0 ? getEmptyStateMessage(userName) : EMPTY_VIEW_MESSAGES[activeView];
@@ -1924,6 +1953,189 @@ focusListEl.addEventListener('click', async (e) => {
   reminders = withImportance(reminders, Number(item.dataset.focusId), button.dataset.importance);
   await saveReminders();
   refreshFocus();
+});
+
+// ---- Plan my day ----
+// A suggested layout of today's pending reminders inside a window the user
+// picks. Blocks come from rules (planner.js); the on-device model may only
+// phrase a sentence about them. Nothing here changes a reminder or its
+// notification: saving stores the plan itself under its own key, and that is
+// all. Edits re-time the blocks so they can never overlap.
+let planState = null; // { scope, plan, estimates, saved }
+let planToken = 0;    // ignores a summary that finishes after the plan changed
+
+const minutesToInput = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const inputToMinutes = value => {
+  const [h, m] = value.split(':').map(Number);
+  return Number.isInteger(h) && Number.isInteger(m) ? h * 60 + m : null;
+};
+
+async function loadStoredPlan() {
+  const { value } = await Preferences.get({ key: PLAN_KEY });
+  return value ? fromStoredPlan(value, reminders) : null;
+}
+
+function renderPlan() {
+  const { plan, scope, saved } = planState;
+  planScopesEl.querySelectorAll('.chip').forEach(chip => chip.classList.toggle('is-selected', chip.dataset.scope === scope));
+  planStartInput.value = minutesToInput(plan.window.start);
+  planEndInput.value = minutesToInput(plan.window.end);
+  planBlocksEl.hidden = plan.blocks.length === 0;
+
+  planBlocksEl.innerHTML = plan.blocks.map((block, index) => {
+    const lengths = DURATION_OPTIONS.includes(block.minutes) ? DURATION_OPTIONS : [...DURATION_OPTIONS, block.minutes].sort((a, b) => a - b);
+    const warning = block.lateBy > 0
+      ? `Finishes ${formatDuration(block.lateBy)} after its ${formatMinutes(block.due)} reminder`
+      : block.beyondWindow ? `Runs past ${formatMinutes(plan.window.end)}` : '';
+    const meta = block.overdue ? 'Already overdue' : `Reminder at ${formatMinutes(block.due)}`;
+    return `
+      <li class="plan-block${warning ? ' has-warning' : ''}" data-plan-id="${block.id}">
+        <p class="plan-time">${formatMinutes(block.start)}<span>to ${formatMinutes(block.end)}</span></p>
+        <div class="plan-body">
+          <p class="plan-name">${escapeHtml(block.name)}</p>
+          <p class="plan-meta">${escapeHtml(meta)}</p>
+          ${warning ? `<p class="plan-warning">${escapeHtml(warning)}</p>` : ''}
+          <div class="plan-controls">
+            <span class="plan-length-group">
+              <select class="plan-length" aria-label="Estimated length of ${escapeAttr(block.name)}">
+                ${lengths.map(m => `<option value="${m}"${m === block.minutes ? ' selected' : ''}>${formatDuration(m)}</option>`).join('')}
+              </select>
+              <span class="plan-estimate">${block.estimated ? 'estimated' : 'your estimate'}</span>
+            </span>
+            <span class="plan-tools">
+              <button type="button" class="plan-tool" data-move="-1" aria-label="Move earlier"${index === 0 ? ' disabled' : ''}>\u2191</button>
+              <button type="button" class="plan-tool" data-move="1" aria-label="Move later"${index === plan.blocks.length - 1 ? ' disabled' : ''}>\u2193</button>
+              <button type="button" class="plan-tool" data-remove="1" aria-label="Remove from plan">\u2715</button>
+            </span>
+          </div>
+        </div>
+      </li>`;
+  }).join('');
+
+  planUnscheduledEl.hidden = plan.unscheduled.length === 0;
+  planUnscheduledListEl.innerHTML = plan.unscheduled.map(task => `
+    <li data-plan-id="${task.id}">
+      <div class="plan-body">
+        <p class="plan-name">${escapeHtml(task.name)}</p>
+        <p class="plan-meta">${escapeHtml(task.text)}</p>
+      </div>
+      ${task.reason === 'no_room' || task.reason === 'removed' ? '<button type="button" class="btn-outline plan-tool-text" data-add="1">Add anyway</button>' : ''}
+    </li>`).join('');
+
+  planSaveBtn.textContent = saved ? 'Plan saved' : 'Save plan';
+  planSaveBtn.disabled = plan.blocks.length === 0 || saved;
+  planDiscardBtn.hidden = !saved;
+}
+
+// Plain sentence first, then the model's phrasing if it arrives (and passes
+// validation) before the plan changes again.
+async function refreshPlanSummary({ askModel }) {
+  const token = ++planToken;
+  intelligence.cancel();
+  const { plan } = planState;
+  planSummaryEl.textContent = planSummary(plan);
+  planSourceEl.hidden = true;
+  if (!askModel) return;
+  const result = await intelligence.summarizePlan(plan);
+  if (token !== planToken || result.status === 'cancelled' || !result.usedAI) return;
+  planSummaryEl.textContent = result.summary;
+  planSourceEl.hidden = false;
+}
+
+// Builds a fresh plan. `window` is the user's own: a named scope or times they typed.
+function replan(scope, window = windowFor(scope, new Date(), reminders, planState?.estimates || {})) {
+  const estimates = planState?.estimates || {};
+  const plan = buildPlan({ reminders, now: new Date(), window, estimates });
+  planState = { scope, plan, estimates, saved: false };
+  renderPlan();
+  refreshPlanSummary({ askModel: true });
+}
+
+function editPlan(update) {
+  planState = { ...planState, plan: update(planState.plan), saved: false };
+  renderPlan();
+  refreshPlanSummary({ askModel: false }); // a plain sentence is enough while the user is still editing
+}
+
+async function openPlan() {
+  const stored = await loadStoredPlan();
+  const opened = await openScreen(planScreen, () => {
+    planState = { scope: null, plan: null, estimates: {}, saved: false };
+    if (stored) {
+      planState = { scope: null, plan: stored, estimates: {}, saved: true };
+      renderPlan();
+      refreshPlanSummary({ askModel: false });
+    } else {
+      replan('rest');
+    }
+  });
+  if (!opened) planToken++;
+}
+
+function closePlan() {
+  planToken++;
+  intelligence.cancel();
+  return closeScreen(planScreen);
+}
+
+planBtn.addEventListener('click', openPlan);
+planBackBtn.addEventListener('click', closePlan);
+
+planScopesEl.addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-scope]');
+  if (chip) replan(chip.dataset.scope);
+});
+
+// Typed window times: the user's own choice, used exactly as given.
+function onWindowTimeChange() {
+  const start = inputToMinutes(planStartInput.value);
+  const end = inputToMinutes(planEndInput.value);
+  if (start === null || end === null || end <= start) {
+    showToast('The end time needs to be after the start time');
+    renderPlan();
+    return;
+  }
+  replan(null, { start, end });
+}
+planStartInput.addEventListener('change', onWindowTimeChange);
+planEndInput.addEventListener('change', onWindowTimeChange);
+
+planBlocksEl.addEventListener('change', (e) => {
+  const item = e.target.closest('[data-plan-id]');
+  if (!item || !e.target.classList.contains('plan-length')) return;
+  const id = Number(item.dataset.planId);
+  const minutes = Number(e.target.value);
+  planState.estimates = { ...planState.estimates, [id]: minutes };
+  editPlan(plan => setBlockMinutes(plan, id, minutes));
+});
+
+planBlocksEl.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-plan-id]');
+  const button = e.target.closest('button');
+  if (!item || !button) return;
+  const id = Number(item.dataset.planId);
+  if (button.dataset.move) editPlan(plan => moveBlock(plan, id, Number(button.dataset.move)));
+  else if (button.dataset.remove) editPlan(plan => removeBlock(plan, id));
+});
+
+planUnscheduledListEl.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-plan-id]');
+  if (item && e.target.closest('[data-add]')) editPlan(plan => addUnscheduled(plan, Number(item.dataset.planId)));
+});
+
+// The only place a plan is stored, and only when the user taps Save plan.
+planSaveBtn.addEventListener('click', async () => {
+  if (!planState || planState.plan.blocks.length === 0) return;
+  await Preferences.set({ key: PLAN_KEY, value: JSON.stringify(toStoredPlan(planState.plan)) });
+  planState = { ...planState, saved: true };
+  renderPlan();
+  showToast('Plan saved on this iPhone');
+});
+
+planDiscardBtn.addEventListener('click', async () => {
+  await Preferences.remove({ key: PLAN_KEY });
+  replan('rest');
+  showToast('Saved plan discarded');
 });
 
 // ---- Init ----

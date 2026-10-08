@@ -1738,10 +1738,19 @@ select,
 }
 
 /* ---- Today's focus ---- */
-.focus-btn {
-  width: 100%;
+.today-actions {
+  display: flex;
+  gap: 10px;
   margin: -6px 0 16px;
-  padding: 12px 16px;
+}
+
+.today-actions[hidden] {
+  display: none;
+}
+
+.focus-btn {
+  flex: 1;
+  padding: 12px 12px;
   border: 1.5px solid var(--accent-color);
   border-radius: 14px;
   background: transparent;
@@ -1751,10 +1760,6 @@ select,
   font-weight: 700;
   cursor: pointer;
   transition: var(--transition-ui);
-}
-
-.focus-btn[hidden] {
-  display: none;
 }
 
 .focus-btn:active {
@@ -1846,4 +1851,166 @@ select,
 .focus-importance .segmented-btn {
   padding: 7px 4px;
   font-size: 0.8rem;
+}
+
+/* ---- Plan my day ---- */
+.plan-window {
+  display: flex;
+  gap: 12px;
+}
+
+.plan-window-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.plan-window-field input {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-card);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 1rem;
+}
+
+#planScopes .chip.is-selected {
+  background: var(--accent-color);
+  color: var(--on-accent);
+}
+
+.plan-blocks,
+.plan-unscheduled {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plan-blocks[hidden],
+#planUnscheduled[hidden],
+#planDiscardBtn[hidden] {
+  display: none;
+}
+
+.plan-block {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--accent-color);
+  border-radius: 14px;
+}
+
+.plan-block.has-warning {
+  border-left-color: var(--color-apricot);
+}
+
+.plan-time {
+  flex: none;
+  width: 72px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.plan-time span {
+  display: block;
+  color: var(--color-muted);
+  font-weight: 500;
+}
+
+.plan-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.plan-meta,
+.plan-warning {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--color-muted);
+}
+
+.plan-warning {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.plan-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.plan-length-group,
+.plan-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plan-length {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-card);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.plan-estimate {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.plan-tool {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.plan-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.plan-unscheduled li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--color-card);
+  border: 1px dashed var(--color-border);
+  border-radius: 12px;
+  font-size: 0.9rem;
+}
+
+.plan-unscheduled .plan-body {
+  gap: 2px;
 }
