@@ -20,7 +20,14 @@ const ids = draft => draft.questions.map(q => q.id);
 const clock = t => (t ? `${t.hour}:${String(t.minute).padStart(2, '0')}` : null);
 
 const ORIGINAL_TZ = process.env.TZ;
-after(() => { if (ORIGINAL_TZ === undefined) delete process.env.TZ; else process.env.TZ = ORIGINAL_TZ; });
+const restoreTimeZone = () => { if (ORIGINAL_TZ === undefined) delete process.env.TZ; else process.env.TZ = ORIGINAL_TZ; };
+after(restoreTimeZone);
+
+// Runs `fn` in another timezone, then puts the original back so later tests are unaffected.
+function withTimeZone(zone, fn) {
+  process.env.TZ = zone;
+  try { fn(); } finally { restoreTimeZone(); }
+}
 
 // ---- the three examples from the brief ----
 
@@ -285,24 +292,26 @@ test('timeValue formats for a time input', () => {
 
 for (const zone of ['Pacific/Auckland', 'America/Los_Angeles', 'Asia/Kolkata', 'Pacific/Kiritimati']) {
   test(`"tomorrow" means the local tomorrow in ${zone}, even just before midnight`, () => {
-    process.env.TZ = zone;
-    const late = new Date(2026, 9, 7, 23, 30);
-    const draft = parseReminderRequest('Call Marcus tomorrow at 8 PM', late);
-    assert.deepEqual(draft.recurrence, { type: 'once', date: '2026-10-08' });
-    const soon = parseReminderRequest('Check the oven in 2 hours', late);
-    assert.equal(soon.recurrence.date, '2026-10-08');
-    assert.equal(clock(soon.time), '1:30');
+    withTimeZone(zone, () => {
+      const late = new Date(2026, 9, 7, 23, 30);
+      const draft = parseReminderRequest('Call Marcus tomorrow at 8 PM', late);
+      assert.deepEqual(draft.recurrence, { type: 'once', date: '2026-10-08' });
+      const soon = parseReminderRequest('Check the oven in 2 hours', late);
+      assert.equal(soon.recurrence.date, '2026-10-08');
+      assert.equal(clock(soon.time), '1:30');
+    });
   });
 }
 
 test('date arithmetic is calendar-based across a daylight-saving change', () => {
-  process.env.TZ = 'America/New_York';
-  const beforeFallBack = new Date(2026, 10, 1, 10, 0); // DST ends Nov 1 2026
-  assert.equal(parseReminderRequest('Call Sam tomorrow at 9 am', beforeFallBack).recurrence.date, '2026-11-02');
-  assert.equal(parseReminderRequest('Call Sam in 7 days at 9 am', new Date(2026, 9, 28, 10, 0)).recurrence.date, '2026-11-04');
-  const beforeSpringForward = new Date(2026, 2, 7, 22, 0); // DST starts Mar 8 2026
-  assert.equal(parseReminderRequest('Call Sam tomorrow at 9 am', beforeSpringForward).recurrence.date, '2026-03-08');
-  assert.equal(parseReminderRequest('Call Sam day after tomorrow at 9 am', beforeSpringForward).recurrence.date, '2026-03-09');
+  withTimeZone('America/New_York', () => {
+    const beforeFallBack = new Date(2026, 10, 1, 10, 0); // DST ends Nov 1 2026
+    assert.equal(parseReminderRequest('Call Sam tomorrow at 9 am', beforeFallBack).recurrence.date, '2026-11-02');
+    assert.equal(parseReminderRequest('Call Sam in 7 days at 9 am', new Date(2026, 9, 28, 10, 0)).recurrence.date, '2026-11-04');
+    const beforeSpringForward = new Date(2026, 2, 7, 22, 0); // DST starts Mar 8 2026
+    assert.equal(parseReminderRequest('Call Sam tomorrow at 9 am', beforeSpringForward).recurrence.date, '2026-03-08');
+    assert.equal(parseReminderRequest('Call Sam day after tomorrow at 9 am', beforeSpringForward).recurrence.date, '2026-03-09');
+  });
 });
 
 // ---- when the model is consulted ----

@@ -38,6 +38,7 @@ import {
 } from './settings.js';
 import { intelligence } from './intelligence/default.js';
 import { applyAnswer, reminderCount, numberedNames, timeValue } from './intelligence/understand.js';
+import { rankFocus, focusSummary, withImportance, normalizeImportance, IMPORTANCE_LEVELS } from './intelligence/prioritizer.js';
 import {
   getSubtasks,
   appendSubtasks,
@@ -93,6 +94,14 @@ const defaultColorEl = document.getElementById('defaultColorSwatches');
 const permissionBanner = document.getElementById('permissionBanner');
 const enableNotifsBtn = document.getElementById('enableNotifsBtn');
 const micBtn = document.getElementById('micBtn');
+const importanceInput = document.getElementById('importanceInput');
+const editImportanceInput = document.getElementById('editImportanceInput');
+const focusBtn = document.getElementById('focusBtn');
+const focusScreen = document.getElementById('focusScreen');
+const focusBackBtn = document.getElementById('focusBackBtn');
+const focusSummaryEl = document.getElementById('focusSummary');
+const focusSourceEl = document.getElementById('focusSource');
+const focusListEl = document.getElementById('focusList');
 const nlInput = document.getElementById('nlInput');
 const nlFillBtn = document.getElementById('nlFillBtn');
 const understandPanel = document.getElementById('understandPanel');
@@ -950,7 +959,7 @@ enableNotifsBtn.addEventListener('click', async () => {
 });
 
 // ---- CRUD ----
-async function addReminder(name, time, recurrence, color, notes, subtasks = []) {
+async function addReminder(name, time, recurrence, color, notes, subtasks = [], importance = 'normal') {
   const reminder = {
     id: nextId++,
     name,
@@ -959,6 +968,7 @@ async function addReminder(name, time, recurrence, color, notes, subtasks = []) 
     color,
     notes,
     ...(subtasks.length ? { subtasks } : {}),
+    ...(normalizeImportance(importance) !== 'normal' ? { importance: normalizeImportance(importance) } : {}),
     takenDate: null,
     currentStreak: 0,
     longestStreak: 0,
@@ -1016,7 +1026,7 @@ async function deleteReminder(id) {
   render({ animateEntrance: true });
 }
 
-async function updateReminder(id, name, time, recurrence, color, notes) {
+async function updateReminder(id, name, time, recurrence, color, notes, importance = 'normal') {
   const reminder = reminders.find(r => r.id === id);
   if (!reminder) return;
   await cancelNotification(reminder); // cancel using the OLD recurrence's notification ids first
@@ -1025,6 +1035,8 @@ async function updateReminder(id, name, time, recurrence, color, notes) {
   reminder.recurrence = recurrence;
   reminder.color = color;
   reminder.notes = notes;
+  if (normalizeImportance(importance) === 'normal') delete reminder.importance;
+  else reminder.importance = normalizeImportance(importance);
   await saveReminders();
   await scheduleNotification(reminder);
   editingId = null;
@@ -1249,6 +1261,7 @@ function render({ animateEntrance = false } = {}) {
   renderGreeting();
   updateBadge();
   updateAllDoneBanner();
+  focusBtn.hidden = !(activeView === 'today' && getPendingToday(reminders).length > 0);
 
   const visible = remindersForView();
   const emptyMessage = reminders.length === 0 ? getEmptyStateMessage(userName) : EMPTY_VIEW_MESSAGES[activeView];
@@ -1346,6 +1359,7 @@ function resetAddForm() {
   nameInput.value = '';
   timeInput.value = '';
   notesInput.value = '';
+  importanceInput.value = 'normal';
   nlInput.value = '';
   clearUnderstanding();
   recurrenceFieldsEl.innerHTML = renderRecurrenceFields();
@@ -1373,16 +1387,17 @@ addForm.addEventListener('submit', async (e) => {
   if (!name || !time || !recurrence) return;
   const color = readColorFromContainer(colorFieldsEl);
   const notes = notesInput.value.trim();
+  const importance = importanceInput.value;
   // "Add three job applications..." was confirmed as separate reminders or as
   // one reminder with steps; everything else is a single reminder.
   if (understanding && understanding.count > 1 && understanding.countMode === 'steps') {
-    await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)));
+    await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)), importance);
   } else if (understanding && reminderCount(understanding) > 1) {
     for (const numbered of numberedNames(name, understanding.count)) {
-      await addReminder(numbered, time, recurrence, color, notes);
+      await addReminder(numbered, time, recurrence, color, notes, [], importance);
     }
   } else {
-    await addReminder(name, time, recurrence, color, notes);
+    await addReminder(name, time, recurrence, color, notes, [], importance);
   }
   closeScreen(addScreen);
 });
@@ -1738,6 +1753,7 @@ function openEdit(id, from = appEl) {
     editNameInput.value = reminder.name;
     editTimeInput.value = reminder.time;
     editNotesInput.value = reminder.notes || '';
+    editImportanceInput.value = normalizeImportance(reminder.importance);
     editRecurrenceFieldsEl.innerHTML = renderRecurrenceFields(reminder.recurrence);
     wireRecurrenceControls(editForm);
     editColorFieldsEl.innerHTML = renderColorSwatches(reminder.color);
@@ -1760,7 +1776,7 @@ editForm.addEventListener('submit', async (e) => {
   const time = editTimeInput.value;
   const recurrence = readRecurrenceFromForm(editForm);
   if (!name || !time || !recurrence || editingId === null) return;
-  await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim());
+  await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value);
   if (detailId !== null) renderDetail(); // refresh it before Back reveals it
   closeEdit();
 });
@@ -1849,6 +1865,65 @@ voiceCancelBtn.addEventListener('click', async () => {
   latestTranscript = '';
   await stopVoiceSession();
   closeVoiceOverlay();
+});
+
+// ---- Today's focus ----
+// The order comes from rules (prioritizer.js) over what Tally stores. The
+// on-device model may only phrase a summary of that order. Changing a task's
+// importance is the user's override: it saves just that one field (no
+// notification is touched) and re-ranks straight away.
+const IMPORTANCE_LABELS = { high: 'High', normal: 'Normal', low: 'Low' };
+let focusToken = 0; // a summary that finishes after the list changed is ignored
+
+function renderFocusList(ranked) {
+  focusListEl.innerHTML = ranked.map(item => `
+    <li class="focus-item${item.rank === 1 ? ' is-top' : ''}" data-focus-id="${item.id}">
+      <span class="focus-rank" aria-hidden="true">${item.rank}</span>
+      <div class="focus-body">
+        <p class="focus-name">${escapeHtml(item.name)}<span class="focus-time">${formatTime(item.time)}</span></p>
+        <p class="focus-reasons">${escapeHtml(item.reasons.join(' \u00b7 '))}</p>
+        <div class="segmented-control focus-importance" role="group" aria-label="Importance of ${escapeAttr(item.name)}">
+          ${IMPORTANCE_LEVELS.map(level => `<button type="button" class="segmented-btn${item.importance === level ? ' selected' : ''}" data-importance="${level}" aria-pressed="${item.importance === level}">${IMPORTANCE_LABELS[level]}</button>`).join('')}
+        </div>
+      </div>
+    </li>
+  `).join('');
+}
+
+// Shows the rule-written sentence at once, then swaps in the model's phrasing
+// if it arrives, and passes validation, before the list changes again.
+async function refreshFocus() {
+  const ranked = rankFocus(reminders);
+  const token = ++focusToken;
+  intelligence.cancel();
+  renderFocusList(ranked);
+  focusSummaryEl.textContent = focusSummary(ranked);
+  focusSourceEl.hidden = true;
+  const result = await intelligence.summarizeFocus(ranked);
+  if (token !== focusToken || result.status === 'cancelled' || !result.usedAI) return;
+  focusSummaryEl.textContent = result.summary;
+  focusSourceEl.hidden = false;
+}
+
+function closeFocus() {
+  focusToken++;
+  intelligence.cancel();
+  return closeScreen(focusScreen);
+}
+
+focusBtn.addEventListener('click', async () => {
+  const opened = await openScreen(focusScreen, () => { refreshFocus(); });
+  if (!opened) focusToken++;
+});
+focusBackBtn.addEventListener('click', closeFocus);
+
+focusListEl.addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-importance]');
+  const item = e.target.closest('[data-focus-id]');
+  if (!button || !item) return;
+  reminders = withImportance(reminders, Number(item.dataset.focusId), button.dataset.importance);
+  await saveReminders();
+  refreshFocus();
 });
 
 // ---- Init ----

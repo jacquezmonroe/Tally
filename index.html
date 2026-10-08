@@ -71,6 +71,8 @@
       <button type="button" role="tab" class="view-tab" data-view="done" aria-selected="false">Done</button>
     </div>
 
+    <button type="button" id="focusBtn" class="focus-btn" hidden>What should I focus on today?</button>
+
     <div id="emptyState" class="empty-state" hidden>
       <p id="emptyStateMessage"></p>
       <p id="emptyStateSub" class="empty-sub">Tap + to get started.</p>
@@ -135,6 +137,12 @@
         <div id="recurrenceFields" class="recurrence-fields"></div>
         <label class="field-label" for="notesInput">Notes (optional)</label>
         <textarea id="notesInput" class="notes-input" rows="3" maxlength="300" placeholder="Add a note"></textarea>
+        <label class="field-label" for="importanceInput">Importance</label>
+        <select id="importanceInput" class="recurrence-select">
+          <option value="normal">Normal</option>
+          <option value="high">High</option>
+          <option value="low">Low</option>
+        </select>
         <label class="field-label">Color</label>
         <div id="colorFields" class="color-fields"></div>
         <button type="submit" id="addBtn" class="btn-add">Save reminder</button>
@@ -223,6 +231,21 @@
     </div>
   </div>
 
+  <div id="focusScreen" class="fullscreen-overlay" hidden>
+    <div class="fullscreen-card">
+      <div class="screen-header">
+        <button type="button" id="focusBackBtn" class="btn-back" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <h2>Today's focus</h2>
+      </div>
+      <p id="focusSummary" class="focus-summary" role="status" aria-live="polite"></p>
+      <p id="focusSource" class="focus-source" hidden>Phrased on this iPhone. The order comes from your deadlines and settings.</p>
+      <ol id="focusList" class="focus-list" aria-label="Tasks, most important first"></ol>
+      <p class="fullscreen-sub">Ranked by what's overdue or due soon, one-time reminders, streaks you'd keep going, steps you've started, and the importance you set. Change a task's importance to re-rank.</p>
+    </div>
+  </div>
+
   <div id="editScreen" class="fullscreen-overlay" hidden>
     <div class="fullscreen-card">
       <div class="screen-header">
@@ -242,6 +265,12 @@
         <div id="editRecurrenceFields" class="recurrence-fields"></div>
         <label class="field-label" for="editNotesInput">Notes (optional)</label>
         <textarea id="editNotesInput" class="notes-input" rows="3" maxlength="300" placeholder="Add a note"></textarea>
+        <label class="field-label" for="editImportanceInput">Importance</label>
+        <select id="editImportanceInput" class="recurrence-select">
+          <option value="normal">Normal</option>
+          <option value="high">High</option>
+          <option value="low">Low</option>
+        </select>
         <label class="field-label">Color</label>
         <div id="editColorFields" class="color-fields"></div>
         <div class="edit-actions">

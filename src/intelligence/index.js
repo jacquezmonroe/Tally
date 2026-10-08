@@ -11,6 +11,7 @@
 
 import { validateTitle, validateSteps, validateRequest } from './validation.js';
 import { parseReminderRequest, needsInterpretation, draftFromParts } from './understand.js';
+import { focusSummary, focusFacts, validateSummary } from './prioritizer.js';
 import { unavailableMessage, errorMessage } from './fallback.js';
 
 // Shown when the model was tried but couldn't help; the rules' draft is used.
@@ -91,6 +92,35 @@ export function createIntelligence({ native }) {
         const quiet = e?.code === 'unavailable' || e?.code === 'plugin_unavailable' || e?.code === 'busy';
         const note = quiet ? null : MODEL_FALLBACK_NOTE;
         return { status: 'ok', draft: rulesDraft, usedAI: false, note };
+      } finally {
+        if (inFlight === job) inFlight = null;
+      }
+    },
+
+    // A short summary of an already-ranked focus list. The order is decided by
+    // rules (prioritizer.js) and is never touched here. The model may only
+    // phrase it, and its sentence is used only if it introduces no number that
+    // isn't in the facts it was given; otherwise the plain sentence is used.
+    // Always resolves with text. -> { status: 'ok', summary, usedAI } | { status: 'cancelled' }
+    async summarizeFocus(ranked) {
+      const plain = { status: 'ok', summary: focusSummary(ranked), usedAI: false };
+      if (ranked.length < 2 || inFlight) return plain; // one task needs no explaining
+
+      const facts = focusFacts(ranked);
+      const job = { cancelled: false };
+      inFlight = job;
+      try {
+        const availability = await native.availability();
+        if (job.cancelled) return { status: 'cancelled' };
+        if (!availability.available) return plain;
+
+        const result = await native.explainFocus(facts);
+        if (job.cancelled) return { status: 'cancelled' };
+        const checked = validateSummary(result?.summary, facts);
+        return checked.ok ? { status: 'ok', summary: checked.text, usedAI: true } : plain;
+      } catch (e) {
+        if (job.cancelled || e?.code === 'cancelled') return { status: 'cancelled' };
+        return plain;
       } finally {
         if (inFlight === job) inFlight = null;
       }

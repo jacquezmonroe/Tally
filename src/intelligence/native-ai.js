@@ -51,6 +51,15 @@ export function createNativeAI(plugin) {
       }
     },
 
+    // -> { summary } (unvalidated); rejects like breakDownTask.
+    async explainFocus(facts) {
+      try {
+        return await plugin.explainFocus({ facts });
+      } catch (e) {
+        throw normalizeError(e);
+      }
+    },
+
     async cancel() {
       try {
         await plugin.cancel();
