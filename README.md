@@ -2,7 +2,7 @@
 
 A simple, private, offline medication and routine reminder app — no accounts, no cloud, nothing ever leaves your device.
 
-**GitHub:** https://github.com/8fn4wf8phr-ops/Tally
+**GitHub:** https://github.com/jacquezmonroe/Tally
 
 ## Features
 
@@ -61,6 +61,6 @@ Tally/
 
 ## Related Projects
 
-- [Weather App](https://github.com/8fn4wf8phr-ops/weather-app) — [live demo](https://weather-app-orcin-one.vercel.app/)
-- [Tic-Tac-Toe (React)](https://github.com/8fn4wf8phr-ops/tic-tac-toe-react) — [live demo](https://tic-tac-toe-react-sand-ten.vercel.app/)
-- [Calculator](https://github.com/8fn4wf8phr-ops/calculator-app) — [live demo](https://calculator-app-three-sand.vercel.app/)
+- [Weather App](https://github.com/jacquezmonroe/weather-app) — [live demo](https://weather-app-orcin-one.vercel.app/)
+- [Tic-Tac-Toe (React)](https://github.com/jacquezmonroe/tic-tac-toe-react) — [live demo](https://tic-tac-toe-react-sand-ten.vercel.app/)
+- [Calculator](https://github.com/jacquezmonroe/calculator-app) — [live demo](https://calculator-app-three-sand.vercel.app/)
