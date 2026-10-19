@@ -45,14 +45,14 @@
   <meta charset="UTF-8">
   <meta name="color-scheme" content="light dark">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Tally</title>
+  <title>Tickmark</title>
 </head>
 <body>
 
   <div id="app" class="app">
     <header class="app-header">
       <div class="app-header-row">
-        <h1>Tally</h1>
+        <h1>Tickmark</h1>
         <button type="button" id="settingsBtn" class="btn-icon" aria-label="Settings">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -61,7 +61,7 @@
     </header>
 
     <div id="permissionBanner" class="permission-banner" hidden>
-      <p>Turn on notifications so Tally can actually remind you.</p>
+      <p>Turn on notifications so Tickmark can actually remind you.</p>
       <button id="enableNotifsBtn" class="btn-small">Enable</button>
     </div>
 
@@ -105,7 +105,7 @@
   <div id="onboardingScreen" class="fullscreen-overlay" hidden>
     <div class="fullscreen-card">
       <h2>What should we call you?</h2>
-      <p class="fullscreen-sub">Tally will use it to personalize reminders and greetings. It's stored only on this device.</p>
+      <p class="fullscreen-sub">Tickmark will use it to personalize reminders and greetings. It's stored only on this device.</p>
       <input type="text" id="onboardingNameInput" placeholder="Your name" maxlength="30" autocomplete="given-name">
       <button type="button" id="onboardingContinueBtn" class="btn-add" disabled>Continue</button>
       <button type="button" id="onboardingSkipBtn" class="btn-text">I'd rather not say</button>
@@ -267,7 +267,7 @@
         <label class="plan-window-field">From <input type="time" id="planStart"></label>
         <label class="plan-window-field">To <input type="time" id="planEnd"></label>
       </div>
-      <p class="fullscreen-sub">Tally only plans inside this window. It doesn't know your calendar or when you're free, so change it to fit your day.</p>
+      <p class="fullscreen-sub">Tickmark only plans inside this window. It doesn't know your calendar or when you're free, so change it to fit your day.</p>
       <p id="planSummary" class="focus-summary" role="status" aria-live="polite"></p>
       <p id="planSource" class="focus-source" hidden>Phrased on this iPhone. Times come from your reminders and the estimates below.</p>
       <ol id="planBlocks" class="plan-blocks" aria-label="Planned tasks in order"></ol>
@@ -383,7 +383,7 @@
 
         <section class="settings-panel" data-panel="privacy" role="tabpanel">
           <h3 class="settings-section-title">Privacy</h3>
-          <p class="settings-static-note">Tally stores everything locally on this device — no accounts, no analytics, and nothing ever leaves your phone.</p>
+          <p class="settings-static-note">Tickmark stores everything locally on this device — no accounts, no analytics, and nothing ever leaves your phone.</p>
         </section>
       </div>
     </div>

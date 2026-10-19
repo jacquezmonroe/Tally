@@ -813,7 +813,7 @@ async function scheduleNotification(reminder) {
   if (recurrence.type === 'daysOfWeek') {
     notifications = (recurrence.daysOfWeek || []).map(dow => ({
       id: reminder.id * 100 + dow,
-      title: 'Tally',
+      title: 'Tickmark',
       body,
       // Capacitor's weekday is 1-7 (Sunday=1); JS Date#getDay() is 0-6 (Sunday=0).
       schedule: { on: { weekday: dow + 1, hour, minute }, allowWhileIdle: true },
@@ -822,7 +822,7 @@ async function scheduleNotification(reminder) {
   } else if (recurrence.type === 'monthlyDate') {
     notifications = [{
       id: reminder.id,
-      title: 'Tally',
+      title: 'Tickmark',
       body,
       schedule: { on: { day: recurrence.dayOfMonth, hour, minute }, allowWhileIdle: true },
       ...deliveryFields,
@@ -831,7 +831,7 @@ async function scheduleNotification(reminder) {
     const [y, m, d] = recurrence.date.split('-').map(Number);
     notifications = [{
       id: reminder.id,
-      title: 'Tally',
+      title: 'Tickmark',
       body,
       schedule: { at: new Date(y, m - 1, d, hour, minute), allowWhileIdle: true },
       ...deliveryFields,
@@ -839,7 +839,7 @@ async function scheduleNotification(reminder) {
   } else {
     notifications = [{
       id: reminder.id,
-      title: 'Tally',
+      title: 'Tickmark',
       body,
       schedule: { on: { hour, minute }, allowWhileIdle: true },
       ...deliveryFields,
@@ -879,7 +879,7 @@ async function scheduleSnooze(reminder) {
     await LocalNotifications.schedule({
       notifications: [{
         id: SNOOZE_ID_BASE + reminder.id,
-        title: 'Tally',
+        title: 'Tickmark',
         body: getNotificationBody(reminder.name, userName),
         schedule: { at, allowWhileIdle: true },
         ...soundField,

@@ -1,6 +1,6 @@
 {
   "appId": "com.jacquezmonroe.tally",
-  "appName": "Tally",
+  "appName": "Tickmark",
   "webDir": "dist",
   "plugins": {
     "LocalNotifications": {

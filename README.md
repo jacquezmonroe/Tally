@@ -1,4 +1,4 @@
-# Tally
+# Tickmark
 
 A simple, private, offline medication and routine reminder app — no accounts, no cloud, nothing ever leaves your device.
 

@@ -16,7 +16,7 @@ import { planSummary, planFacts } from './planner.js';
 import { unavailableMessage, errorMessage } from './fallback.js';
 
 // Shown when the model was tried but couldn't help; the rules' draft is used.
-const MODEL_FALLBACK_NOTE = "The on-device model couldn't read that one, so Tally filled in what it could. Please check the details.";
+const MODEL_FALLBACK_NOTE = "The on-device model couldn't read that one, so Tickmark filled in what it could. Please check the details.";
 
 export function createIntelligence({ native }) {
   let inFlight = null; // the one request allowed at a time
