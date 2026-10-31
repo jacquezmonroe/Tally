@@ -65,6 +65,7 @@ import {
   discardReviewItem,
   approvedSteps,
 } from './subtasks.js';
+import { REMINDER_ACTION_TYPE_ID, reminderActionTypes, classifyNotificationAction } from './notificationActions.js';
 import './style.css';
 
 const STORAGE_KEY = 'tally-reminders';
@@ -96,6 +97,11 @@ let activeView = 'today'; // Home tab: 'today' | 'upcoming' | 'done'
 let detailId = null; // the reminder whose detail screen is open, if any
 let understanding = null; // the add screen's current "Describe it" draft: its count and open questions
 let understandBusy = false;
+// Resolves once saved reminders and settings have been loaded. A notification
+// action can reach the page before init() has finished (the plugin holds the
+// event until a listener exists), so anything that changes reminders waits here.
+let markAppReady;
+const appReady = new Promise(resolve => { markAppReady = resolve; });
 const ringProgressById = new Map(); // last-rendered ring fill, so changes can animate
 
 const listEl = document.getElementById('reminderList');
@@ -807,7 +813,7 @@ async function scheduleNotification(reminder) {
   // reminderId rides along so a tapped notification can find its row again
   // (see localNotificationActionPerformed below) — the notification's own
   // `id` isn't always the reminder's id (daysOfWeek uses derived sub-ids).
-  const deliveryFields = { ...soundField, badge: 1, extra: { reminderId: reminder.id } };
+  const deliveryFields = { ...soundField, badge: 1, actionTypeId: REMINDER_ACTION_TYPE_ID, extra: { reminderId: reminder.id } };
   let notifications;
 
   if (recurrence.type === 'daysOfWeek') {
@@ -884,6 +890,7 @@ async function scheduleSnooze(reminder) {
         schedule: { at, allowWhileIdle: true },
         ...soundField,
         badge: 1,
+        actionTypeId: REMINDER_ACTION_TYPE_ID,
         extra: { reminderId: reminder.id },
       }],
     });
@@ -902,7 +909,19 @@ async function cancelSnooze(id) {
   }
 }
 
+// iOS only shows the buttons for categories the app has registered, so this
+// runs before every (re)scheduling pass, which happens on each launch. That is
+// also how existing reminders get the action without being re-created.
+async function registerReminderActions() {
+  try {
+    await LocalNotifications.registerActionTypes({ types: reminderActionTypes() });
+  } catch (e) {
+    console.error('Could not register notification actions', e);
+  }
+}
+
 async function rescheduleAll() {
+  await registerReminderActions();
   const now = new Date();
   for (const reminder of reminders) {
     if (isExpiredOneTime(reminder, now)) continue;
@@ -963,12 +982,26 @@ async function highlightFromNotification(reminderId) {
   setTimeout(() => target.classList.remove('notif-highlight'), NOTIF_HIGHLIGHT_MS);
 }
 
+// "Mark Taken" pressed on a notification. Uses completeReminder(), the very
+// function the in-app check-off uses, so the streak and grace-period rules are
+// not repeated here. It never un-takes: an already-done reminder (a double
+// press, or a late duplicate) is left alone, and so is one that is not due
+// today, which the app itself would not let you check off either.
+async function markTakenFromNotification(reminderId) {
+  await appReady;
+  const reminder = reminders.find(r => r.id === reminderId);
+  if (!reminder || !appliesToday(reminder) || reminder.takenDate === todayKey()) return;
+  await completeReminder(reminderId);
+}
+
 // Tapping a delivered notification opens the app (default Capacitor
 // behavior) — this is what scrolls to and highlights the specific reminder
 // it was for, found via the reminderId set in scheduleNotification's extra.
+// Pressing its "Mark Taken" button marks it done instead (see above).
 LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
-  const reminderId = action?.notification?.extra?.reminderId;
-  if (reminderId != null) highlightFromNotification(reminderId);
+  const route = classifyNotificationAction(action);
+  if (route.kind === 'mark_taken') markTakenFromNotification(route.reminderId);
+  else if (route.kind === 'open') highlightFromNotification(route.reminderId);
 }).catch(() => {
   // Not running in the native shell (plain browser preview).
 });
@@ -1011,37 +1044,50 @@ async function addReminder(name, time, recurrence, color, notes, subtasks = [], 
   setView(appliesToday(reminder) ? 'today' : 'upcoming');
 }
 
+// The in-app check-off: tapping the circle, swiping, and "Mark complete" all
+// come through here. Taps it again to un-take.
 async function toggleTaken(id) {
+  const reminder = reminders.find(r => r.id === id);
+  if (!reminder) return;
+  if (reminder.takenDate !== todayKey()) {
+    await completeReminder(id);
+    return;
+  }
+  reminder.takenDate = null;
+  await saveReminders();
+  render();
+}
+
+// Marks a reminder taken today and updates its streak (with the grace period).
+// This is the one place that happens: the in-app check-off calls it, and so
+// does the notification's "Mark Taken" button. Callers decide whether the
+// reminder should be completed; this always completes it.
+async function completeReminder(id) {
   const idx = reminders.findIndex(r => r.id === id);
   if (idx === -1) return;
   const reminder = reminders[idx];
   const today = todayKey();
-  if (reminder.takenDate === today) {
-    reminder.takenDate = null;
-  } else {
-    const previousStreak = reminder.currentStreak;
-    justTakenId = id;
-    cancelSnooze(id); // done now, so a pending snooze shouldn't ping later
-    reminder.takenDate = today;
-    reminders[idx] = markReminderTaken(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
-    const newStreak = reminders[idx].currentStreak;
-    if (newStreak > previousStreak) {
-      justIncrementedStreakId = id; // real increment this session — the ring pops
-      if (isStreakMilestone(newStreak)) {
-        showMilestoneModal(newStreak);
-      } else if (isStreakAcknowledgment(newStreak)) {
-        showToast(getStreakAcknowledgment(newStreak, userName));
-      }
+  const previousStreak = reminder.currentStreak;
+  justTakenId = id;
+  cancelSnooze(id); // done now, so a pending snooze shouldn't ping later
+  reminder.takenDate = today;
+  reminders[idx] = markReminderTaken(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+  const newStreak = reminders[idx].currentStreak;
+  if (newStreak > previousStreak) {
+    justIncrementedStreakId = id; // real increment this session — the ring pops
+    if (isStreakMilestone(newStreak)) {
+      showMilestoneModal(newStreak);
+    } else if (isStreakAcknowledgment(newStreak)) {
+      showToast(getStreakAcknowledgment(newStreak, userName));
     }
   }
   await saveReminders();
   render();
-  const justCompleted = justTakenId !== null;
   justTakenId = null;
   justIncrementedStreakId = null;
   // On the Today tab the completed row lingers so its animation can play;
   // once that's had time to finish, a fresh render moves it over to Done.
-  if (justCompleted && activeView === 'today') setTimeout(() => render(), COMPLETE_LINGER_MS);
+  if (activeView === 'today') setTimeout(() => render(), COMPLETE_LINGER_MS);
 }
 
 const COMPLETE_LINGER_MS = 1400;
@@ -2165,6 +2211,7 @@ async function init() {
   // the app was closed — this is meant to be a gentle nudge, not a list.
   const anyStreakReset = reminders.some(r => previousStreaks.get(r.id) > 0 && r.currentStreak === 0);
   await saveReminders();
+  markAppReady(); // reminders, settings and stale-streak checks are done: notification actions may proceed
   render({ animateEntrance: true });
   if (anyStreakReset) {
     showToast(getStreakResetMessage(userName));
@@ -2194,4 +2241,4 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-init();
+init().catch(e => console.error('init failed', e)).finally(markAppReady); // never leave a waiting action hanging
