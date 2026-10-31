@@ -66,6 +66,7 @@ import {
   approvedSteps,
 } from './subtasks.js';
 import { REMINDER_ACTION_TYPE_ID, reminderActionTypes, classifyNotificationAction } from './notificationActions.js';
+import { createReminderStorage, parseQuietHours, parseReminderDefaults, describeNotice } from './storage.js';
 import './style.css';
 
 const STORAGE_KEY = 'tally-reminders';
@@ -77,6 +78,19 @@ const APPEARANCE_KEY = 'tally-appearance';
 const REMINDER_DEFAULTS_KEY = 'tally-reminder-defaults';
 const QUIET_HOURS_KEY = 'tally-quiet-hours';
 const PLAN_KEY = 'tally-plan';
+
+// All loading and saving of reminders goes through this, which checks what it
+// reads, backs up anything it has to repair, and refuses to save over data it
+// could not safely read (see storage.js). The key names above are unchanged.
+const storage = createReminderStorage({
+  prefs: {
+    async get(key) { const { value } = await Preferences.get({ key }); return value; },
+    set: (key, value) => Preferences.set({ key, value }),
+    remove: (key) => Preferences.remove({ key }),
+  },
+  keys: { reminders: STORAGE_KEY, nextId: NEXT_ID_KEY },
+});
+let blockedNotice = null; // a notice that exists only for this session (nothing could be written)
 const GREETING_STYLE_KEY = 'tally-greeting-style';
 
 let reminders = [];
@@ -137,6 +151,9 @@ const focusBackBtn = document.getElementById('focusBackBtn');
 const focusSummaryEl = document.getElementById('focusSummary');
 const focusSourceEl = document.getElementById('focusSource');
 const focusListEl = document.getElementById('focusList');
+const recoveryBanner = document.getElementById('recoveryBanner');
+const recoveryBannerText = document.getElementById('recoveryBannerText');
+const recoveryDismissBtn = document.getElementById('recoveryDismissBtn');
 const nlInput = document.getElementById('nlInput');
 const nlFillBtn = document.getElementById('nlFillBtn');
 const understandPanel = document.getElementById('understandPanel');
@@ -424,28 +441,37 @@ function escapeHtml(str) {
 
 // ---- Storage ----
 async function loadReminders() {
-  const { value } = await Preferences.get({ key: STORAGE_KEY });
-  const parsed = value ? JSON.parse(value) : [];
-  // Reminders saved before the streak/recurrence features existed won't have these fields.
-  reminders = parsed.map(r => ({
-    currentStreak: 0,
-    longestStreak: 0,
-    lastCompletedDate: null,
-    recurrence: { type: 'daily' },
-    notes: '',
-    ...r,
-    color: normalizeReminderColor(r.color),
-  }));
-  const { value: idValue } = await Preferences.get({ key: NEXT_ID_KEY });
-  nextId = idValue ? parseInt(idValue, 10) : 1;
+  try {
+    const loaded = await storage.load();
+    reminders = loaded.reminders;
+    nextId = loaded.nextId;
+    if (!loaded.saveAllowed) blockedNotice = loaded.notice;
+  } catch (e) {
+    // Should not happen (the store handles its own errors), but a failed load
+    // must never end with an empty list being saved over real data.
+    console.error('Could not load reminders', e);
+    storage.blockSaving();
+    reminders = [];
+    nextId = 1;
+    blockedNotice = { kind: 'storage_unreadable' };
+  }
+}
+
+// Shows the "we recovered your data" message, from this launch or an earlier
+// one the user hasn't dismissed yet.
+async function refreshRecoveryNotice() {
+  const notice = blockedNotice || await storage.getNotice();
+  const text = describeNotice(notice);
+  recoveryBannerText.textContent = text;
+  recoveryBanner.hidden = !text;
 }
 
 async function saveReminders() {
-  await Preferences.set({ key: STORAGE_KEY, value: JSON.stringify(reminders) });
+  await storage.saveReminders(reminders);
 }
 
 async function saveNextId() {
-  await Preferences.set({ key: NEXT_ID_KEY, value: String(nextId) });
+  await storage.saveNextId(nextId);
 }
 
 // ---- Personalization ----
@@ -589,11 +615,8 @@ async function saveAccentTheme(id) {
 
 // ---- Reminder defaults (grace period, notification sound) ----
 async function loadReminderDefaults() {
-  const { value } = await Preferences.get({ key: REMINDER_DEFAULTS_KEY });
-  reminderDefaults = value
-    ? { ...DEFAULT_REMINDER_DEFAULTS, ...JSON.parse(value) }
-    : { ...DEFAULT_REMINDER_DEFAULTS };
-  reminderDefaults.defaultColor = normalizeReminderColor(reminderDefaults.defaultColor);
+  const { value } = await storage.loadSetting(REMINDER_DEFAULTS_KEY, parseReminderDefaults);
+  reminderDefaults = value;
 }
 
 async function saveReminderDefaults(next) {
@@ -603,8 +626,8 @@ async function saveReminderDefaults(next) {
 
 // ---- Quiet hours ----
 async function loadQuietHours() {
-  const { value } = await Preferences.get({ key: QUIET_HOURS_KEY });
-  quietHours = value ? { ...DEFAULT_QUIET_HOURS, ...JSON.parse(value) } : { ...DEFAULT_QUIET_HOURS };
+  const { value } = await storage.loadSetting(QUIET_HOURS_KEY, parseQuietHours);
+  quietHours = value;
 }
 
 async function saveQuietHours(next) {
@@ -1004,6 +1027,11 @@ LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
   else if (route.kind === 'open') highlightFromNotification(route.reminderId);
 }).catch(() => {
   // Not running in the native shell (plain browser preview).
+});
+
+recoveryDismissBtn.addEventListener('click', async () => {
+  recoveryBanner.hidden = true;
+  if (!blockedNotice) await storage.dismissNotice(); // a session-only notice has nothing stored to clear
 });
 
 enableNotifsBtn.addEventListener('click', async () => {
@@ -2212,6 +2240,7 @@ async function init() {
   const anyStreakReset = reminders.some(r => previousStreaks.get(r.id) > 0 && r.currentStreak === 0);
   await saveReminders();
   markAppReady(); // reminders, settings and stale-streak checks are done: notification actions may proceed
+  await refreshRecoveryNotice();
   render({ animateEntrance: true });
   if (anyStreakReset) {
     showToast(getStreakResetMessage(userName));
