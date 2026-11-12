@@ -3,8 +3,8 @@ import { Preferences } from '@capacitor/preferences';
 import { Badge } from '@capawesome/capacitor-badge';
 import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
-import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage, getNotificationBody } from './personalization.js';
-import { getPendingToday, countOverdue, isExpiredOneTime, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay } from './due.js';
+import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
+import { getPendingToday, countOverdue, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay } from './due.js';
 import {
   ringProgress,
   ringDashOffset,
@@ -34,7 +34,6 @@ import {
   getReminderColorHex,
   graceOccurrencesForHours,
   DEFAULT_QUIET_HOURS,
-  isWithinQuietHours,
 } from './settings.js';
 import { intelligence } from './intelligence/default.js';
 import { applyAnswer, reminderCount, numberedNames, timeValue } from './intelligence/understand.js';
@@ -65,9 +64,13 @@ import {
   discardReviewItem,
   approvedSteps,
 } from './subtasks.js';
-import { REMINDER_ACTION_TYPE_ID, reminderActionTypes, classifyNotificationAction } from './notificationActions.js';
+import { classifyNotificationAction } from './notificationActions.js';
 import { createReminderStorage, parseQuietHours, parseReminderDefaults, describeNotice } from './storage.js';
+import { createNotifier, SNOOZE_MINUTES } from './notifications.js';
+import { createReminderActions } from './reminderActions.js';
+import { summarizeAlerts, alertBannerText, alertBadgeText } from './alertStatus.js';
 import './style.css';
+import './alerts.css';
 
 const STORAGE_KEY = 'tally-reminders';
 const NEXT_ID_KEY = 'tally-next-id';
@@ -82,13 +85,36 @@ const PLAN_KEY = 'tally-plan';
 // All loading and saving of reminders goes through this, which checks what it
 // reads, backs up anything it has to repair, and refuses to save over data it
 // could not safely read (see storage.js). The key names above are unchanged.
+const prefsAdapter = {
+  async get(key) { const { value } = await Preferences.get({ key }); return value; },
+  set: (key, value) => Preferences.set({ key, value }),
+  remove: (key) => Preferences.remove({ key }),
+};
 const storage = createReminderStorage({
-  prefs: {
-    async get(key) { const { value } = await Preferences.get({ key }); return value; },
-    set: (key, value) => Preferences.set({ key, value }),
-    remove: (key) => Preferences.remove({ key }),
-  },
+  prefs: prefsAdapter,
   keys: { reminders: STORAGE_KEY, nextId: NEXT_ID_KEY },
+});
+
+// Every phone alert is derived from the saved reminders and settings by ONE
+// function (see notifications.js). Nothing else in this file schedules or
+// cancels an alert: it saves, then asks for a sync. The getters read the
+// variables below at call time.
+const notifier = createNotifier({
+  plugin: LocalNotifications,
+  prefs: prefsAdapter,
+  getReminders: () => reminders,
+  getSettings: () => ({ soundEnabled: reminderDefaults.soundEnabled, quietHours }),
+  getUserName: () => userName,
+});
+const actions = createReminderActions({
+  state: {
+    get reminders() { return reminders; },
+    set reminders(value) { reminders = value; },
+    get nextId() { return nextId; },
+    set nextId(value) { nextId = value; },
+  },
+  storage,
+  notifier,
 });
 let blockedNotice = null; // a notice that exists only for this session (nothing could be written)
 const GREETING_STYLE_KEY = 'tally-greeting-style';
@@ -128,6 +154,9 @@ const colorFieldsEl = document.getElementById('colorFields');
 const defaultColorEl = document.getElementById('defaultColorSwatches');
 const permissionBanner = document.getElementById('permissionBanner');
 const enableNotifsBtn = document.getElementById('enableNotifsBtn');
+const alertBannerEl = document.getElementById('alertBanner');
+const alertBannerMessageEl = document.getElementById('alertBannerText');
+const alertRetryBtn = document.getElementById('alertRetryBtn');
 const micBtn = document.getElementById('micBtn');
 const importanceInput = document.getElementById('importanceInput');
 const editImportanceInput = document.getElementById('editImportanceInput');
@@ -470,10 +499,6 @@ async function saveReminders() {
   await storage.saveReminders(reminders);
 }
 
-async function saveNextId() {
-  await storage.saveNextId(nextId);
-}
-
 // ---- Personalization ----
 async function loadUserName() {
   const { value } = await Preferences.get({ key: USER_NAME_KEY });
@@ -487,6 +512,7 @@ async function saveUserName(name) {
   } else {
     await Preferences.remove({ key: USER_NAME_KEY });
   }
+  await syncAlerts(); // the name is part of the alert text
 }
 
 async function loadGreetingStyle() {
@@ -528,6 +554,9 @@ async function updateBadge() {
     // Unsupported (plain browser) or badge permission not granted yet.
     console.warn('Could not update badge', e);
   }
+  // The first badge call is what makes iOS show its permission prompt. If the
+  // last sync ran while that was still undecided, the answer is in by now.
+  if (lastAlertPermission === 'prompt') syncAlerts();
 }
 
 let milestoneTimer = null;
@@ -633,6 +662,7 @@ async function loadQuietHours() {
 async function saveQuietHours(next) {
   quietHours = next;
   await Preferences.set({ key: QUIET_HOURS_KEY, value: JSON.stringify(quietHours) });
+  await syncAlerts(); // alerts already on the phone must pick up the new quiet hours
 }
 
 // ---- Settings screen rendering ----
@@ -702,6 +732,7 @@ function renderSettingsScreen() {
 
   renderOnOffToggle(soundToggleEl, reminderDefaults.soundEnabled, async (enabled) => {
     await saveReminderDefaults({ ...reminderDefaults, soundEnabled: enabled });
+    await syncAlerts(); // alerts already on the phone must pick up the new sound setting
     renderSettingsScreen();
   });
 
@@ -804,164 +835,40 @@ settingsNameInput.addEventListener('blur', async () => {
 });
 
 // ---- Notifications ----
-// 'daysOfWeek' reminders need one native notification per weekday, since
-// Capacitor's schedule.on only takes a single weekday value. Sub-IDs are
-// derived from the reminder id so they can be recomputed for cancellation
-// without storing them separately.
-function notificationIdsFor(reminder) {
-  const recurrence = reminder.recurrence || { type: 'daily' };
-  if (recurrence.type === 'daysOfWeek') {
-    return (recurrence.daysOfWeek || []).map(dow => reminder.id * 100 + dow);
-  }
-  return [reminder.id];
+// Scheduling lives in notifications.js. This section only shows the outcome:
+// the "Enable" banner (permission not asked yet), the alert banner (denied, or
+// some alerts could not be scheduled) and a warning badge on affected rows.
+let alertBadges = new Map(); // reminder id -> why its alert is not working
+let lastAlertPermission = null; // what the last sync saw: 'granted' | 'denied' | 'prompt' | 'unavailable'
+
+function applyAlertResult(result) {
+  if (!result) return;
+  const summary = summarizeAlerts(result, reminders);
+  lastAlertPermission = result.permission;
+  permissionBanner.hidden = summary.kind !== 'prompt';
+  const text = alertBannerText(summary);
+  alertBannerEl.hidden = !text;
+  alertBannerMessageEl.textContent = text;
+  alertRetryBtn.textContent = summary.kind === 'denied' ? 'Check again' : 'Retry';
+  const changed = [...summary.badges].join() !== [...alertBadges].join();
+  alertBadges = summary.badges;
+  if (changed) render();
 }
 
-async function scheduleNotification(reminder) {
-  const [hour, minute] = reminder.time.split(':').map(Number);
-  const recurrence = reminder.recurrence || { type: 'daily' };
-  const body = getNotificationBody(reminder.name, userName);
-  // Quiet hours override the sound setting rather than delaying delivery —
-  // for a medication/routine reminder, arriving on time but silent is safer
-  // than arriving late. Omitting `sound` entirely is what makes a Capacitor
-  // local notification silent on iOS (see @capacitor/local-notifications'
-  // LocalNotificationSchema.sound docs).
-  const soundField = reminderDefaults.soundEnabled && !isWithinQuietHours(hour, minute, quietHours)
-    ? { sound: 'default' }
-    : {};
-  // The badge lights up when the reminder fires even if the app is closed —
-  // iOS runs none of our code then, so it has to ride on the notification.
-  // A scheduled notification can only carry a fixed number, so it says 1
-  // ("something is due"); the app replaces it with the true count of overdue
-  // reminders whenever it's opened or backgrounded.
-  // reminderId rides along so a tapped notification can find its row again
-  // (see localNotificationActionPerformed below) — the notification's own
-  // `id` isn't always the reminder's id (daysOfWeek uses derived sub-ids).
-  const deliveryFields = { ...soundField, badge: 1, actionTypeId: REMINDER_ACTION_TYPE_ID, extra: { reminderId: reminder.id } };
-  let notifications;
-
-  if (recurrence.type === 'daysOfWeek') {
-    notifications = (recurrence.daysOfWeek || []).map(dow => ({
-      id: reminder.id * 100 + dow,
-      title: 'Tickmark',
-      body,
-      // Capacitor's weekday is 1-7 (Sunday=1); JS Date#getDay() is 0-6 (Sunday=0).
-      schedule: { on: { weekday: dow + 1, hour, minute }, allowWhileIdle: true },
-      ...deliveryFields,
-    }));
-  } else if (recurrence.type === 'monthlyDate') {
-    notifications = [{
-      id: reminder.id,
-      title: 'Tickmark',
-      body,
-      schedule: { on: { day: recurrence.dayOfMonth, hour, minute }, allowWhileIdle: true },
-      ...deliveryFields,
-    }];
-  } else if (recurrence.type === 'once') {
-    const [y, m, d] = recurrence.date.split('-').map(Number);
-    notifications = [{
-      id: reminder.id,
-      title: 'Tickmark',
-      body,
-      schedule: { at: new Date(y, m - 1, d, hour, minute), allowWhileIdle: true },
-      ...deliveryFields,
-    }];
-  } else {
-    notifications = [{
-      id: reminder.id,
-      title: 'Tickmark',
-      body,
-      schedule: { on: { hour, minute }, allowWhileIdle: true },
-      ...deliveryFields,
-    }];
-  }
-
-  try {
-    await LocalNotifications.schedule({ notifications });
-  } catch (e) {
-    console.error('Could not schedule notification', e);
-  }
+// Compares what the phone has scheduled with the saved reminders and settings,
+// fixes any difference, and shows the result. Safe to call at any time, and as
+// often as needed: asking twice changes nothing the second time.
+async function syncAlerts() {
+  const result = await actions.syncAlerts();
+  applyAlertResult(result);
+  return result;
 }
 
-async function cancelNotification(reminder) {
-  try {
-    // A pending snooze belongs to the reminder too, so it goes with it.
-    const ids = [...notificationIdsFor(reminder), SNOOZE_ID_BASE + reminder.id].map(id => ({ id }));
-    await LocalNotifications.cancel({ notifications: ids });
-  } catch (e) {
-    console.error('Could not cancel notification', e);
-  }
-}
-
-// ---- Snooze ----
-// One extra one-time notification, 10 minutes out. Its id sits far above
-// reminder ids and the daysOfWeek sub-ids (id * 100 + weekday), so it never
-// replaces the reminder's real schedule.
-const SNOOZE_MINUTES = 10;
-const SNOOZE_ID_BASE = 1000000000;
-
-async function scheduleSnooze(reminder) {
-  const at = new Date(Date.now() + SNOOZE_MINUTES * 60 * 1000);
-  const soundField = reminderDefaults.soundEnabled && !isWithinQuietHours(at.getHours(), at.getMinutes(), quietHours)
-    ? { sound: 'default' }
-    : {};
-  try {
-    await LocalNotifications.schedule({
-      notifications: [{
-        id: SNOOZE_ID_BASE + reminder.id,
-        title: 'Tickmark',
-        body: getNotificationBody(reminder.name, userName),
-        schedule: { at, allowWhileIdle: true },
-        ...soundField,
-        badge: 1,
-        actionTypeId: REMINDER_ACTION_TYPE_ID,
-        extra: { reminderId: reminder.id },
-      }],
-    });
-    return true;
-  } catch (e) {
-    console.error('Could not schedule snooze', e);
-    return false;
-  }
-}
-
-async function cancelSnooze(id) {
-  try {
-    await LocalNotifications.cancel({ notifications: [{ id: SNOOZE_ID_BASE + id }] });
-  } catch (e) {
-    // Not running in the native shell, or nothing was scheduled.
-  }
-}
-
-// iOS only shows the buttons for categories the app has registered, so this
-// runs before every (re)scheduling pass, which happens on each launch. That is
-// also how existing reminders get the action without being re-created.
-async function registerReminderActions() {
-  try {
-    await LocalNotifications.registerActionTypes({ types: reminderActionTypes() });
-  } catch (e) {
-    console.error('Could not register notification actions', e);
-  }
-}
-
-async function rescheduleAll() {
-  await registerReminderActions();
-  const now = new Date();
-  for (const reminder of reminders) {
-    if (isExpiredOneTime(reminder, now)) continue;
-    await scheduleNotification(reminder);
-  }
-}
-
-async function checkPermissions() {
-  try {
-    const status = await LocalNotifications.checkPermissions();
-    permissionBanner.hidden = status.display === 'granted';
-    return status.display === 'granted';
-  } catch (e) {
-    // Not running inside the native shell (e.g. plain browser preview) — hide the banner.
-    permissionBanner.hidden = true;
-    return false;
-  }
+// Shows what happened after an add / edit / delete. Saving and alerting are
+// separate outcomes: a reminder whose alert failed is still saved.
+function reportOutcome({ saved, alerts }) {
+  if (saved && !saved.saved) showToast("Couldn't save that change. Check your storage and try again.");
+  applyAlertResult(alerts);
 }
 
 // A notification that arrives while the app is open doesn't touch the badge
@@ -1019,7 +926,7 @@ async function markTakenFromNotification(reminderId) {
 
 // Tapping a delivered notification opens the app (default Capacitor
 // behavior) — this is what scrolls to and highlights the specific reminder
-// it was for, found via the reminderId set in scheduleNotification's extra.
+// it was for, found via the reminderId in each alert's extra (see notifications.js).
 // Pressing its "Mark Taken" button marks it done instead (see above).
 LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
   const route = classifyNotificationAction(action);
@@ -1029,6 +936,8 @@ LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
   // Not running in the native shell (plain browser preview).
 });
 
+alertRetryBtn.addEventListener('click', () => syncAlerts());
+
 recoveryDismissBtn.addEventListener('click', async () => {
   recoveryBanner.hidden = true;
   if (!blockedNotice) await storage.dismissNotice(); // a session-only notice has nothing stored to clear
@@ -1037,9 +946,8 @@ recoveryDismissBtn.addEventListener('click', async () => {
 enableNotifsBtn.addEventListener('click', async () => {
   try {
     const result = await LocalNotifications.requestPermissions();
+    await syncAlerts(); // schedules everything if allowed, or shows the "turned off" guidance if not
     if (result.display === 'granted') {
-      permissionBanner.hidden = true;
-      await rescheduleAll();
       lastBadgeCount = null; // badge permission is granted along with notifications
       updateBadge();
     }
@@ -1050,26 +958,14 @@ enableNotifsBtn.addEventListener('click', async () => {
 
 // ---- CRUD ----
 async function addReminder(name, time, recurrence, color, notes, subtasks = [], importance = 'normal') {
-  const reminder = {
-    id: nextId++,
-    name,
-    time,
-    recurrence,
-    color,
-    notes,
-    ...(subtasks.length ? { subtasks } : {}),
-    ...(normalizeImportance(importance) !== 'normal' ? { importance: normalizeImportance(importance) } : {}),
-    takenDate: null,
-    currentStreak: 0,
-    longestStreak: 0,
-    lastCompletedDate: null,
-  };
-  reminders.push(reminder);
-  await saveReminders();
-  await saveNextId();
-  await scheduleNotification(reminder);
+  const outcome = await actions.add({ name, time, recurrence, color, notes, subtasks, importance });
+  if (outcome.error === 'ids_exhausted') {
+    showToast("Can't add more reminders: the app has run out of reminder numbers.");
+    return;
+  }
+  reportOutcome(outcome);
   // Show the tab the new reminder lives on, so it doesn't seem to vanish.
-  setView(appliesToday(reminder) ? 'today' : 'upcoming');
+  setView(appliesToday(outcome.reminder) ? 'today' : 'upcoming');
 }
 
 // The in-app check-off: tapping the circle, swiping, and "Mark complete" all
@@ -1097,7 +993,6 @@ async function completeReminder(id) {
   const today = todayKey();
   const previousStreak = reminder.currentStreak;
   justTakenId = id;
-  cancelSnooze(id); // done now, so a pending snooze shouldn't ping later
   reminder.takenDate = today;
   reminders[idx] = markReminderTaken(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
   const newStreak = reminders[idx].currentStreak;
@@ -1110,6 +1005,7 @@ async function completeReminder(id) {
     }
   }
   await saveReminders();
+  syncAlerts(); // done now, so a pending snooze is dropped and shouldn't ping later
   render();
   justTakenId = null;
   justIncrementedStreakId = null;
@@ -1122,26 +1018,14 @@ const COMPLETE_LINGER_MS = 1400;
 
 async function deleteReminder(id) {
   if (openSwipeId === id) openSwipeId = null;
-  const reminder = reminders.find(r => r.id === id);
-  reminders = reminders.filter(r => r.id !== id);
-  await saveReminders();
-  if (reminder) await cancelNotification(reminder);
+  reportOutcome(await actions.remove(id));
   render({ animateEntrance: true });
 }
 
 async function updateReminder(id, name, time, recurrence, color, notes, importance = 'normal') {
-  const reminder = reminders.find(r => r.id === id);
-  if (!reminder) return;
-  await cancelNotification(reminder); // cancel using the OLD recurrence's notification ids first
-  reminder.name = name;
-  reminder.time = time;
-  reminder.recurrence = recurrence;
-  reminder.color = color;
-  reminder.notes = notes;
-  if (normalizeImportance(importance) === 'normal') delete reminder.importance;
-  else reminder.importance = normalizeImportance(importance);
-  await saveReminders();
-  await scheduleNotification(reminder);
+  const outcome = await actions.update(id, { name, time, recurrence, color, notes, importance });
+  if (outcome.error) return;
+  reportOutcome(outcome);
   editingId = null;
   render();
 }
@@ -1421,6 +1305,7 @@ function render({ animateEntrance = false } = {}) {
       <div class="reminder-info">
         <span class="reminder-name">${escapeHtml(reminder.name)}</span>
         <span class="reminder-time">${timeLabel}</span>
+        ${alertBadges.has(reminder.id) ? `<span class="alert-badge">${alertBadgeText(alertBadges.get(reminder.id))}</span>` : ''}
       </div>
       ${streakRing}
       <button class="delete-btn" aria-label="Delete">✕</button>
@@ -1660,10 +1545,12 @@ detailCompleteBtn.addEventListener('click', async () => {
 detailSnoozeBtn.addEventListener('click', async () => {
   const reminder = reminders.find(r => r.id === detailId);
   if (!reminder) return;
-  const ok = await scheduleSnooze(reminder);
-  if (ok) {
+  const result = await actions.snooze(reminder.id, SNOOZE_MINUTES);
+  if (result.ok) {
     await closeDetail();
     showToast(`Snoozed for ${SNOOZE_MINUTES} minutes`);
+  } else if (result.reason === 'permission_denied') {
+    showToast('Notifications are off for Tickmark. Turn them on in Settings.');
   } else {
     showToast("Couldn't snooze — check that notifications are allowed");
   }
@@ -2245,9 +2132,11 @@ async function init() {
   if (anyStreakReset) {
     showToast(getStreakResetMessage(userName));
   }
-  // Re-sync scheduled notifications on every launch so reminders scheduled
-  // before a change (like the badge) pick it up. Same ids replace the old ones.
-  if (await checkPermissions()) await rescheduleAll();
+  // First launch of this version: clear every alert scheduled under the old
+  // numbering, then rebuild them all from the saved reminders. Every launch
+  // after that only fixes whatever differs.
+  await notifier.migrate();
+  await syncAlerts();
   micBtn.hidden = !(await isVoiceAvailable());
 
   const { value: onboarded } = await Preferences.get({ key: ONBOARDED_KEY });
@@ -2267,6 +2156,8 @@ document.addEventListener('visibilitychange', () => {
     // forget what we last set and re-sync instead of trusting it.
     lastBadgeCount = null;
     render();
+    // The user may have changed the notification permission in iOS Settings.
+    appReady.then(() => syncAlerts());
   }
 });
 
