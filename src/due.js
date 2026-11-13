@@ -31,6 +31,8 @@ export function isExpiredOneTime(reminder, date = new Date()) {
 }
 
 export function isPendingToday(reminder, date = new Date()) {
+  // A one-time reminder is finished for good once it has any completion date.
+  if (reminder.recurrence && reminder.recurrence.type === 'once' && reminder.takenDate) return false;
   return appliesToday(reminder, date) && reminder.takenDate !== todayKey(date);
 }
 
@@ -83,13 +85,69 @@ export function nextOccurrence(reminder, date = new Date()) {
   return null;
 }
 
-// Upcoming = doesn't apply today, but will again.
+// ---- One-time reminders from earlier days ----
+// A one-time reminder has a single date. Once that day has passed it matches
+// no "today" rule, so without these helpers it would appear in no tab at all.
+// Days are compared as local "YYYY-MM-DD" keys (the same keys the reminders
+// store), never as timestamps, so local midnight is the boundary and the UTC
+// offset has no say.
+const isOneTime = (reminder) => Boolean(reminder.recurrence) && reminder.recurrence.type === 'once';
+
+// Not finished, and its day is before today. Never completed automatically.
+export function isOverdueOneTime(reminder, date = new Date()) {
+  return isOneTime(reminder) && !reminder.takenDate && reminder.recurrence.date < todayKey(date);
+}
+
+// Finished on an earlier day than today (today's go in Done).
+export function isCompletedOneTime(reminder, date = new Date()) {
+  return isOneTime(reminder) && Boolean(reminder.takenDate) && reminder.takenDate < todayKey(date);
+}
+
+// The "Overdue" section: oldest first, since that is the one waiting longest.
+export function getOverdueOneTime(reminders, date = new Date()) {
+  return reminders
+    .filter(r => isOverdueOneTime(r, date))
+    .sort((a, b) => a.recurrence.date.localeCompare(b.recurrence.date) || a.time.localeCompare(b.time));
+}
+
+// The collapsed "Completed" list: most recently finished first. Kept forever
+// (nothing here deletes anything); the user removes them if they want to.
+export function getCompletedOneTime(reminders, date = new Date()) {
+  return reminders
+    .filter(r => isCompletedOneTime(r, date))
+    .sort((a, b) => b.takenDate.localeCompare(a.takenDate) || b.time.localeCompare(a.time));
+}
+
+// Local midnight of a "YYYY-MM-DD" key.
+export function dateFromKey(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+// The local midnight of a one-time reminder's day, or null for any other kind.
+export function oneTimeDay(reminder) {
+  return isOneTime(reminder) ? dateFromKey(reminder.recurrence.date) : null;
+}
+
+// "Checked off" for the purposes of the check mark: a recurring reminder is
+// done for today only, a one-time reminder is done for good.
+export function isFinished(reminder, date = new Date()) {
+  return isOneTime(reminder) ? Boolean(reminder.takenDate) : reminder.takenDate === todayKey(date);
+}
+
+// Upcoming = doesn't apply today, but will again. A one-time reminder that
+// was already completed (early) has nothing left to come up.
 export function isUpcoming(reminder, date = new Date()) {
+  if (isOneTime(reminder) && reminder.takenDate) return false;
   return !appliesToday(reminder, date) && nextOccurrence(reminder, date) !== null;
 }
 
+// Done = completed today. A one-time reminder counts even when its own day
+// was earlier (it was overdue and finished late), which "applies today" alone
+// would miss.
 export function isDoneToday(reminder, date = new Date()) {
-  return appliesToday(reminder, date) && reminder.takenDate === todayKey(date);
+  if (reminder.takenDate !== todayKey(date)) return false;
+  return appliesToday(reminder, date) || isOneTime(reminder);
 }
 
 // Reminders for one Home tab. Today = still pending, Done = completed today,

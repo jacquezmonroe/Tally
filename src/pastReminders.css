@@ -1,0 +1,75 @@
+/* The "Overdue" list (top of Today) and the collapsed "Completed" list (bottom
+   of Done) for one-time reminders from earlier days. Rows reuse the normal
+   .reminder-item look; this only adds the section headers and spacing. In its
+   own file so it stays separate from style.css. */
+
+.past-section {
+  margin-bottom: 16px;
+}
+
+.past-section[hidden],
+.past-list[hidden] {
+  display: none;
+}
+
+.past-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.past-count {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.past-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.past-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 4px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.past-chevron {
+  display: inline-block;
+  font-size: 1.2rem;
+  transition: transform 0.2s ease;
+}
+
+.past-toggle[aria-expanded="true"] .past-chevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .past-chevron {
+    transition: none;
+  }
+}
+
+.past-row .reminder-time {
+  /* "Was due Mon, Nov 9" reads as a status: keep it from wrapping oddly. */
+  overflow-wrap: anywhere;
+}

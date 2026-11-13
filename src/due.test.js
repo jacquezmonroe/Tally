@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay } from './due.js';
+import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { todayKey } from './streak.js';
 
 // 2024-01-10 is a Wednesday.
@@ -185,4 +187,139 @@ test('describeDay says Today / Tomorrow, then a short date', () => {
   assert.equal(describeDay(at(23), at(1)), 'Today');
   assert.equal(describeDay(new Date(2024, 0, 11), at(10)), 'Tomorrow');
   assert.equal(describeDay(new Date(2024, 0, 12), at(10), 'en-US'), 'Fri, Jan 12');
+});
+
+// ---- One-time reminders from earlier days (stabilization finding 2) ----
+// Before this fix a one-time reminder whose day had passed matched no tab:
+// filterForView returned it for none of today / upcoming / done, so it was
+// saved but invisible.
+
+const onceOn = (id, date, over = {}) => makeReminder({ id, name: `R${id}`, recurrence: { type: 'once', date }, ...over });
+// 2024-01-10 is "today" in these tests (see at()).
+const TODAY = '2024-01-10';
+
+const PLACES = ['today', 'upcoming', 'done', 'overdue', 'completed'];
+function placesOf(reminder, date) {
+  const found = [];
+  for (const view of ['today', 'upcoming', 'done']) if (filterForView([reminder], view, date).length) found.push(view);
+  if (getOverdueOneTime([reminder], date).length) found.push('overdue');
+  if (getCompletedOneTime([reminder], date).length) found.push('completed');
+  return found;
+}
+
+test('REGRESSION: an unfinished one-time reminder from a past day is in the Overdue list, not nowhere', () => {
+  const r = onceOn(1, '2024-01-08');
+  assert.deepEqual(filterForView([r], 'today', at(10)), []);
+  assert.deepEqual(getOverdueOneTime([r], at(10)).map(x => x.id), [1]);
+  assert.equal(isOverdueOneTime(r, at(10)), true);
+});
+
+test('overdue list is oldest first, then by time, and ignores finished and recurring reminders', () => {
+  const list = [
+    onceOn(1, '2024-01-09', { time: '08:00' }),
+    onceOn(2, '2024-01-05', { time: '18:00' }),
+    onceOn(3, '2024-01-09', { time: '07:00' }),
+    onceOn(4, '2024-01-02', { takenDate: '2024-01-02' }),
+    makeReminder({ id: 5 }),
+    onceOn(6, TODAY),
+    onceOn(7, '2024-01-20'),
+  ];
+  assert.deepEqual(getOverdueOneTime(list, at(10)).map(x => x.id), [2, 3, 1]);
+});
+
+test('completing an overdue reminder moves it to Done today, then to Completed from the next day', () => {
+  const r = onceOn(1, '2024-01-08', { takenDate: TODAY });
+  assert.deepEqual(placesOf(r, at(12)), ['done']);
+  assert.equal(isOverdueOneTime(r, at(12)), false);
+  const nextDay = new Date(2024, 0, 11, 0, 0);
+  assert.deepEqual(placesOf(r, nextDay), ['completed']);
+  assert.equal(isDoneToday(r, nextDay), false);
+});
+
+test('a one-time reminder done on its own day: Done that day, Completed afterwards, never deleted', () => {
+  const r = onceOn(1, TODAY, { takenDate: TODAY });
+  assert.deepEqual(placesOf(r, at(23, 59)), ['done']);
+  assert.deepEqual(placesOf(r, new Date(2024, 0, 11, 0, 0)), ['completed']);
+  assert.deepEqual(placesOf(r, new Date(2025, 5, 1, 9, 0)), ['completed'], 'still there a year later');
+});
+
+test('completed list is most recently finished first', () => {
+  const list = [onceOn(1, '2024-01-01', { takenDate: '2024-01-02' }), onceOn(2, '2024-01-01', { takenDate: '2024-01-08' }), onceOn(3, '2024-01-01', { takenDate: '2024-01-05' })];
+  assert.deepEqual(getCompletedOneTime(list, at(10)).map(x => x.id), [2, 3, 1]);
+});
+
+test('a one-time reminder completed early (its day is still ahead) is not "upcoming" any more', () => {
+  const r = onceOn(1, '2024-01-20', { takenDate: TODAY });
+  assert.equal(isUpcoming(r, at(10)), false);
+  assert.deepEqual(placesOf(r, at(10)), ['done']);
+});
+
+test('un-completing an overdue reminder puts it back in Overdue', () => {
+  const r = onceOn(1, '2024-01-08', { takenDate: null });
+  assert.deepEqual(placesOf(r, at(10)), ['overdue']);
+});
+
+test('INVARIANT: every one-time reminder is in exactly one place, for every date and completion state', () => {
+  const dates = ['2023-12-31', '2024-01-01', '2024-01-09', TODAY, '2024-01-11', '2024-02-29'];
+  const taken = [null, '2023-12-31', '2024-01-09', TODAY];
+  const nows = [at(0, 0), at(0, 1), at(9, 0), at(23, 59), new Date(2024, 0, 11, 0, 0)];
+  for (const date of dates) for (const takenDate of taken) for (const now of nows) {
+    const places = placesOf(onceOn(1, date, { takenDate }), now);
+    assert.equal(places.length, 1, `date ${date}, taken ${takenDate}, now ${now.toString()}: in ${JSON.stringify(places)}`);
+    assert.ok(PLACES.includes(places[0]));
+  }
+});
+
+test('midnight boundary: dated today and unfinished is Today until local midnight, Overdue from 00:00', () => {
+  const r = onceOn(1, TODAY, { time: '23:59' });
+  assert.deepEqual(placesOf(r, at(23, 59)), ['today']);
+  assert.deepEqual(placesOf(r, new Date(2024, 0, 10, 23, 59, 59, 999)), ['today']);
+  assert.deepEqual(placesOf(r, new Date(2024, 0, 11, 0, 0, 0, 0)), ['overdue']);
+});
+
+test('oneTimeDay returns the local day, and null for recurring reminders', () => {
+  const day = oneTimeDay(onceOn(1, '2024-03-09'));
+  assert.deepEqual([day.getFullYear(), day.getMonth(), day.getDate(), day.getHours()], [2024, 2, 9, 0]);
+  assert.equal(oneTimeDay(makeReminder()), null);
+});
+
+test('overdue and completed one-time reminders do not change the all-done banner or the badge count', () => {
+  const list = [makeReminder({ id: 1, takenDate: TODAY }), onceOn(2, '2024-01-01'), onceOn(3, '2024-01-01', { takenDate: '2024-01-02' })];
+  assert.equal(isAllDoneToday(list, at(12)), true);
+  assert.equal(countOverdue(list, at(12)), 0);
+});
+
+// The same boundaries in different real time zones. The day rule must follow
+// the phone's local clock, not UTC: these run the check in a child process
+// whose TZ is set, so a UTC-based comparison would give a different answer.
+const ZONES = ['UTC', 'Pacific/Kiritimati', 'Pacific/Pago_Pago', 'America/Los_Angeles', 'Asia/Kolkata'];
+const dueUrl = new URL('./due.js', import.meta.url).href;
+const zoneScript = `
+  import { getOverdueOneTime, filterForView } from ${JSON.stringify(dueUrl)};
+  const r = { id: 1, name: 'x', time: '23:59', takenDate: null, recurrence: { type: 'once', date: '2024-01-10' } };
+  const at = (d, h, m) => new Date(2024, 0, d, h, m);
+  const state = (now) => ({ today: filterForView([r], 'today', now).length, overdue: getOverdueOneTime([r], now).length });
+  console.log(JSON.stringify({ before: state(at(10, 23, 59)), after: state(at(11, 0, 0)), early: state(at(10, 0, 0)) }));
+`;
+for (const zone of ZONES) {
+  test(`midnight boundary follows the local clock in ${zone}`, () => {
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', zoneScript], { env: { ...process.env, TZ: zone }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(out), {
+      early: { today: 1, overdue: 0 },
+      before: { today: 1, overdue: 0 },
+      after: { today: 0, overdue: 1 },
+    });
+  });
+}
+
+test('isFinished: recurring is done for today only, one-time is done for good', () => {
+  assert.equal(isFinished(makeReminder({ takenDate: TODAY }), at(10)), true);
+  assert.equal(isFinished(makeReminder({ takenDate: '2024-01-09' }), at(10)), false);
+  assert.equal(isFinished(onceOn(1, '2024-01-01', { takenDate: '2024-01-02' }), at(10)), true);
+  assert.equal(isFinished(onceOn(1, '2024-01-01'), at(10)), false);
+});
+
+test('dateFromKey gives local midnight', () => {
+  const d = dateFromKey('2024-03-09');
+  assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()], [2024, 2, 9, 0]);
 });

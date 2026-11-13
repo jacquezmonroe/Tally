@@ -103,7 +103,20 @@
       <div class="skeleton-row"><span class="skeleton-circle"></span><span class="skeleton-lines"><span class="skeleton-line"></span><span class="skeleton-line skeleton-line--short"></span></span></div>
     </div>
 
+    <section id="overdueSection" class="past-section" aria-labelledby="overdueHeading" hidden>
+      <h2 id="overdueHeading" class="past-heading">Overdue <span id="overdueCount" class="past-count"></span></h2>
+      <div id="overdueList" class="past-list"></div>
+    </section>
+
     <div id="reminderList" class="reminder-list"></div>
+
+    <section id="completedSection" class="past-section" hidden>
+      <button type="button" id="completedToggle" class="past-toggle" aria-expanded="false" aria-controls="completedList">
+        <span>Completed <span id="completedCount" class="past-count"></span></span>
+        <span class="past-chevron" aria-hidden="true">›</span>
+      </button>
+      <div id="completedList" class="past-list" hidden></div>
+    </section>
 
     <p class="local-caption">Saved on this device</p>
   </div>

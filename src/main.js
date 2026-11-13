@@ -4,7 +4,7 @@ import { Badge } from '@capawesome/capacitor-badge';
 import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
 import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
-import { getPendingToday, countOverdue, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay } from './due.js';
+import { getPendingToday, countOverdue, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
 import {
   ringProgress,
   ringDashOffset,
@@ -71,6 +71,7 @@ import { createReminderActions } from './reminderActions.js';
 import { summarizeAlerts, alertBannerText, alertBadgeText } from './alertStatus.js';
 import './style.css';
 import './alerts.css';
+import './pastReminders.css';
 
 const STORAGE_KEY = 'tally-reminders';
 const NEXT_ID_KEY = 'tally-next-id';
@@ -157,6 +158,13 @@ const enableNotifsBtn = document.getElementById('enableNotifsBtn');
 const alertBannerEl = document.getElementById('alertBanner');
 const alertBannerMessageEl = document.getElementById('alertBannerText');
 const alertRetryBtn = document.getElementById('alertRetryBtn');
+const overdueSectionEl = document.getElementById('overdueSection');
+const overdueListEl = document.getElementById('overdueList');
+const overdueCountEl = document.getElementById('overdueCount');
+const completedSectionEl = document.getElementById('completedSection');
+const completedListEl = document.getElementById('completedList');
+const completedCountEl = document.getElementById('completedCount');
+const completedToggleEl = document.getElementById('completedToggle');
 const micBtn = document.getElementById('micBtn');
 const importanceInput = document.getElementById('importanceInput');
 const editImportanceInput = document.getElementById('editImportanceInput');
@@ -920,7 +928,9 @@ async function highlightFromNotification(reminderId) {
 async function markTakenFromNotification(reminderId) {
   await appReady;
   const reminder = reminders.find(r => r.id === reminderId);
-  if (!reminder || !appliesToday(reminder) || reminder.takenDate === todayKey()) return;
+  // A one-time reminder from an earlier day can still be marked taken (it is
+  // listed under Overdue); a recurring one only on a day it applies.
+  if (!reminder || !(appliesToday(reminder) || isOverdueOneTime(reminder)) || isFinished(reminder)) return;
   await completeReminder(reminderId);
 }
 
@@ -973,7 +983,7 @@ async function addReminder(name, time, recurrence, color, notes, subtasks = [], 
 async function toggleTaken(id) {
   const reminder = reminders.find(r => r.id === id);
   if (!reminder) return;
-  if (reminder.takenDate !== todayKey()) {
+  if (!isFinished(reminder)) {
     await completeReminder(id);
     return;
   }
@@ -1235,6 +1245,53 @@ viewTabsEl.addEventListener('click', (e) => {
   if (tab && tab.dataset.view !== activeView) setView(tab.dataset.view);
 });
 
+// ---- One-time reminders from earlier days ----
+// "Overdue" tops the Today tab; "Completed" sits collapsed under Done. Neither
+// completes, reschedules or deletes anything by itself: a reminder leaves
+// Overdue only when the user checks it off, edits it or deletes it.
+let completedOpen = false;
+
+function buildPastRow(reminder, kind) {
+  const finished = kind === 'completed';
+  const dayLabel = finished
+    ? `Done ${describeDay(dateFromKey(reminder.takenDate))}`
+    : `Was due ${describeDay(oneTimeDay(reminder))} · ${formatTime(reminder.time)}`;
+  const item = document.createElement('div');
+  item.className = 'reminder-item past-row' + (finished ? ' taken' : '');
+  item.dataset.reminderId = reminder.id;
+  item.innerHTML = `
+    <button class="check-btn" aria-label="${finished ? 'Mark not taken' : 'Mark taken'}">${finished ? checkSvg(false) : ''}</button>
+    <div class="reminder-info">
+      <span class="reminder-name">${escapeHtml(reminder.name)}</span>
+      <span class="reminder-time">${dayLabel}</span>
+    </div>
+    <button class="delete-btn" aria-label="Delete">✕</button>
+  `;
+  item.querySelector('.check-btn').addEventListener('click', () => toggleTaken(reminder.id));
+  item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
+  item.querySelector('.delete-btn').addEventListener('click', () => deleteReminder(reminder.id));
+  return item;
+}
+
+function renderPastSections() {
+  const overdue = activeView === 'today' ? getOverdueOneTime(reminders) : [];
+  overdueSectionEl.hidden = overdue.length === 0;
+  overdueCountEl.textContent = overdue.length ? `· ${overdue.length}` : '';
+  overdueListEl.replaceChildren(...overdue.map(r => buildPastRow(r, 'overdue')));
+
+  const completed = activeView === 'done' ? getCompletedOneTime(reminders) : [];
+  completedSectionEl.hidden = completed.length === 0;
+  completedCountEl.textContent = completed.length ? `· ${completed.length}` : '';
+  completedToggleEl.setAttribute('aria-expanded', String(completedOpen));
+  completedListEl.hidden = !completedOpen;
+  completedListEl.replaceChildren(...(completedOpen ? completed.map(r => buildPastRow(r, 'completed')) : []));
+}
+
+completedToggleEl.addEventListener('click', () => {
+  completedOpen = !completedOpen;
+  render();
+});
+
 // ---- Rendering ----
 // animateEntrance: true only for renders where the list's actual *contents*
 // just changed (initial load, add, delete) — every other render (toggling,
@@ -1244,6 +1301,7 @@ viewTabsEl.addEventListener('click', (e) => {
 function render({ animateEntrance = false } = {}) {
   skeletonEl.remove(); // real data is here; no-op after the first render
   listEl.innerHTML = '';
+  renderPastSections();
   const today = todayKey();
   renderGreeting();
   updateBadge();
@@ -1499,9 +1557,14 @@ function renderDetail() {
   const reminder = reminders.find(r => r.id === detailId);
   if (!reminder) return;
   const dueToday = appliesToday(reminder);
-  const done = dueToday && reminder.takenDate === todayKey();
-  const next = dueToday ? null : nextOccurrence(reminder);
-  const day = dueToday ? 'Today' : describeDay(next);
+  // A one-time reminder from an earlier day has no "next" day: it says when it
+  // was due, and can still be completed (or un-completed).
+  const oneTimeDate = oneTimeDay(reminder);
+  const missedOneTime = isOverdueOneTime(reminder) || isCompletedOneTime(reminder);
+  const done = oneTimeDate ? isFinished(reminder) : dueToday && reminder.takenDate === todayKey();
+  const day = dueToday ? 'Today'
+    : oneTimeDate ? `${oneTimeDate < new Date() ? 'Was due ' : ''}${describeDay(oneTimeDate)}`
+    : describeDay(nextOccurrence(reminder));
 
   detailTitleEl.textContent = reminder.name;
   detailWhenEl.textContent = `${day}, ${formatTime(reminder.time)}${done ? ' · Done' : ''}`;
@@ -1509,10 +1572,11 @@ function renderDetail() {
   detailNotesEl.textContent = reminder.notes || '';
   detailNotesBlockEl.hidden = !reminder.notes;
 
-  // Completing and snoozing only make sense for something that's due today.
-  detailCompleteBtn.hidden = !dueToday;
+  // Completing and snoozing only make sense for something that's due today,
+  // or a one-time reminder from an earlier day that is still on the list.
+  detailCompleteBtn.hidden = !(dueToday || (oneTimeDate && (missedOneTime || done)));
   detailCompleteBtn.textContent = done ? 'Mark incomplete' : 'Mark complete';
-  detailSnoozeBtn.hidden = !dueToday || done;
+  detailSnoozeBtn.hidden = !dueToday || done || missedOneTime;
   renderDetailSteps();
 }
 
