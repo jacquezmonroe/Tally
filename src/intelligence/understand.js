@@ -281,6 +281,9 @@ function resolveTime({ voiceTime, dateInfo, period }) {
   return null;
 }
 
+// Questions that already decide which day a one-time reminder is for.
+const DAY_QUESTION_IDS = new Set(['date', 'conflict', 'weekday_repeat', 'ampm', 'past_time']);
+
 // Everything except the title: when, how often, and what to ask.
 function buildSchedule({ voice, dateInfo, recurrenceOverride, rawText, now }) {
   const questions = [...dateInfo.questions];
@@ -381,6 +384,24 @@ function buildSchedule({ voice, dateInfo, recurrenceOverride, rawText, now }) {
       });
       recurrence = { type: 'once', date: todayKey(tomorrow) };
     }
+  }
+
+  // Nothing in the sentence said which day, so "today" is only a guess. Say so
+  // and offer the other likely answer, instead of filling it in silently.
+  // (Questions that already settle the day make this one unnecessary.)
+  const dayAlreadyAsked = questions.some(q => DAY_QUESTION_IDS.has(q.id));
+  if (recurrence.type === 'once' && !dateInfo.date && !dayAlreadyAsked) {
+    const tomorrow = addDays(today, 1);
+    questions.push({
+      id: 'date_assumed',
+      kind: 'choice',
+      message: 'No day was given, so this is set for today. Is that right?',
+      options: [
+        { label: `Today, ${dayLabel(today)}`, patch: { recurrence: { type: 'once', date: todayKey(today) } } },
+        { label: `Tomorrow, ${dayLabel(tomorrow)}`, patch: { recurrence: { type: 'once', date: todayKey(tomorrow) } } },
+      ],
+      defaultIndex: 0,
+    });
   }
 
   if (!time) {

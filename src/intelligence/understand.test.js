@@ -106,7 +106,7 @@ test('an explicit am/pm overrides a period word with no question', () => {
 test('"at 8 in the evening" is settled by the period', () => {
   const draft = parse('Take medication at 8 in the evening');
   assert.equal(clock(draft.time), '20:00');
-  assert.deepEqual(ids(draft), []);
+  assert.deepEqual(ids(draft), ['date_assumed'], 'no am/pm question; only the undated day is flagged');
 });
 
 test('month names: this year, or next year if the date has passed', () => {
@@ -217,14 +217,16 @@ test('a time that already passed today asks, and defaults to tomorrow', () => {
 test('a missing time and a missing title are asked for, not guessed', () => {
   const noTime = parse('Water the plants');
   assert.equal(noTime.time, null);
-  assert.deepEqual(ids(noTime), ['time']);
+  assert.deepEqual(ids(noTime), ['date_assumed', 'time']);
   const nothing = parse('at 8 pm');
   assert.equal(nothing.name, '');
   assert.ok(ids(nothing).includes('name'));
 });
 
-test('without a repeat or date, a reminder is one-time today (never silently recurring)', () => {
-  assert.deepEqual(parse('Water the plants at 6 pm').recurrence, { type: 'once', date: '2026-10-07' });
+test('without a repeat or date, a reminder is one-time today (never silently recurring), and says so', () => {
+  const draft = parse('Water the plants at 6 pm');
+  assert.deepEqual(draft.recurrence, { type: 'once', date: '2026-10-07' });
+  assert.deepEqual(ids(draft), ['date_assumed']);
 });
 
 test('counts are capped and "add a task" is not a count', () => {
@@ -485,4 +487,154 @@ test('while the model is busy, a hard sentence still gets the rules draft', asyn
   release();
   assert.equal((await first).usedAI, true);
   assert.equal(native.calls.interpret.length, 1);
+});
+
+// ---- Phase 4: relative dates, spoken (stabilization finding 5) ----
+// The mic's transcript goes through parseReminderRequest, offline and with no
+// model. The review screen shows every question; nothing is saved until the
+// user taps Save reminder.
+
+test('REGRESSION: "Remind me to email Christian tomorrow at 9 am" keeps the name clean and dates it tomorrow', () => {
+  // Old result (voice.js alone): name "Email Christian tomorrow", no date, which the form then set to today.
+  const draft = parse('Remind me to email Christian tomorrow at 9 am');
+  assert.equal(draft.name, 'Email Christian');
+  assert.equal(clock(draft.time), '9:00');
+  assert.deepEqual(draft.recurrence, { type: 'once', date: '2026-10-08' });
+  assert.deepEqual(draft.questions, [], 'a fully dated sentence needs no confirmation');
+});
+
+test('the Christian sentence also works through the app entry point (createIntelligence), with the model untouched', async () => {
+  const native = fakeNative({ interpret: async () => { throw new Error('should not be called'); } });
+  const result = await createIntelligence({ native }).understandReminder('Remind me to email Christian tomorrow at 9 am', NOW);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.usedAI, false);
+  assert.equal(result.draft.name, 'Email Christian');
+  assert.equal(timeValue(result.draft.time), '09:00', 'the exact string the form\'s time input gets');
+  assert.equal(result.draft.recurrence.date, '2026-10-08');
+});
+
+// [what was said, name, time, date]. "Now" is Wednesday 2026-10-07 10:00.
+const SPOKEN = [
+  ['Remind me tomorrow at 9 am to email Christian', 'Email Christian', '9:00', '2026-10-08'],
+  ['tomorrow at 7 am go for a run', 'Go for a run', '7:00', '2026-10-08'],
+  ['Remind me to call the dentist this friday at 3 pm', 'Call the dentist', '15:00', '2026-10-09'],
+  ['Remind me to renew my license the day after tomorrow at 10 am', 'Renew my license', '10:00', '2026-10-09'],
+  ['Remind me to take medicine tonight at 9', 'Take medicine', '21:00', '2026-10-07'],
+  ['Remind me in 2 days to refill prescription at 9 am', 'Refill prescription', '9:00', '2026-10-09'],
+  ['Remind me to pay the electric bill in 3 days at noon', 'Pay the electric bill', '12:00', '2026-10-10'],
+  ['Remind me to buy milk today at 5 pm', 'Buy milk', '17:00', '2026-10-07'],
+  ['Remind me to meet Christian on Friday at 2 pm', 'Meet Christian', '14:00', '2026-10-09'],
+  ['Remind me to call Mark next Monday at 4 pm', 'Call Mark', '16:00', '2026-10-12'],
+];
+for (const [said, name, time, date] of SPOKEN) {
+  test(`spoken: "${said}"`, () => {
+    const draft = parse(said);
+    assert.equal(draft.name, name, 'date and time words are stripped from the name');
+    assert.equal(clock(draft.time), time);
+    assert.equal(draft.recurrence.type, 'once');
+    assert.equal(draft.recurrence.date, date);
+    assert.ok(!ids(draft).includes('date_assumed'), 'a date was said, so none is assumed');
+  });
+}
+
+test('a weekday said without "every" still asks just-this-once or weekly, and that settles the day', () => {
+  const draft = parse('Remind me to call Mark on Tuesday at 4 pm');
+  assert.deepEqual(ids(draft), ['weekday_repeat']);
+  assert.equal(draft.recurrence.date, '2026-10-13');
+});
+
+test('"in N days" and "day after tomorrow" ignore which time of day it is now', () => {
+  for (const now of [new Date(2026, 9, 7, 0, 1), new Date(2026, 9, 7, 23, 59)]) {
+    assert.equal(parse('Dentist in 3 days at 9 am', now).recurrence.date, '2026-10-10');
+    assert.equal(parse('Dentist the day after tomorrow at 9 am', now).recurrence.date, '2026-10-09');
+  }
+});
+
+test('"tomorrow" is the next local day just before midnight, and across a month and year end', () => {
+  assert.equal(parse('Call Dana tomorrow at 8 am', new Date(2026, 9, 7, 23, 59)).recurrence.date, '2026-10-08');
+  assert.equal(parse('Call Dana tomorrow at 8 am', new Date(2026, 9, 31, 12, 0)).recurrence.date, '2026-11-01');
+  assert.equal(parse('Call Dana tomorrow at 8 am', new Date(2026, 11, 31, 12, 0)).recurrence.date, '2027-01-01');
+});
+
+// -- undated or ambiguous: flagged, never filled in silently --
+
+test('REGRESSION: a sentence with no day is flagged: today is shown as an assumption, with tomorrow one tap away', () => {
+  const draft = parse('Remind me to call mom at 5 pm');
+  assert.equal(draft.recurrence.date, '2026-10-07');
+  assert.deepEqual(ids(draft), ['date_assumed']);
+  const question = draft.questions[0];
+  assert.match(question.message, /No day was given/);
+  assert.equal(question.defaultIndex, 0);
+  assert.equal(applyAnswer(draft, 'date_assumed', 1).recurrence.date, '2026-10-08');
+  assert.deepEqual(applyAnswer(draft, 'date_assumed', 0).questions, [], 'confirming clears the flag');
+});
+
+test('a title with no time and no day asks about both', () => {
+  assert.deepEqual(ids(parse('Buy milk')), ['date_assumed', 'time']);
+});
+
+test('a period of the day is not a day: "in the evening" is still undated', () => {
+  assert.deepEqual(ids(parse('Submit the report in the evening')), ['date_assumed', 'time_guess']);
+});
+
+test('every kind of day that WAS said clears the flag', () => {
+  const dated = [
+    'Call mom today at 5 pm', 'Call mom tonight at 9', 'Call mom tomorrow at 5 pm', 'Call mom on Friday at 5 pm',
+    'Call mom in 2 days at 5 pm', 'Call mom in 2 hours', 'Call mom on October 20 at 5 pm', 'Call mom on the 20th of October at 5 pm',
+    'Call mom every day at 5 pm', 'Call mom every Friday at 5 pm', 'Call mom every morning', 'Call mom on the 15th at 5 pm',
+  ];
+  for (const said of dated) assert.ok(!ids(parse(said)).includes('date_assumed'), said);
+});
+
+test('questions that already settle the day are not doubled up with the undated flag', () => {
+  assert.deepEqual(ids(parse('Take vitamins at 8')), ['ampm']);
+  assert.deepEqual(ids(parse('Call mom at 9 am')), ['past_time']);
+});
+
+// -- a spoken time that has already passed, with no date --
+
+test('REGRESSION: a past time with no date is pre-filled as TOMORROW and flagged, with "today anyway" available', () => {
+  const draft = parse('Remind me to call mom at 9 am'); // it is 10:00
+  assert.equal(draft.recurrence.date, '2026-10-08');
+  assert.deepEqual(ids(draft), ['past_time']);
+  const question = draft.questions[0];
+  assert.match(question.message, /already passed/);
+  assert.match(question.options[0].label, /^Tomorrow/);
+  assert.equal(question.defaultIndex, 0);
+  assert.equal(applyAnswer(draft, 'past_time', 1).recurrence.date, '2026-10-07');
+});
+
+test('past-time boundary: the current minute counts as passed; one minute ahead stays today (but is flagged as undated)', () => {
+  assert.equal(parse('Call mom at 10 am').recurrence.date, '2026-10-08');
+  assert.deepEqual(ids(parse('Call mom at 10 am')), ['past_time']);
+  const ahead = parse('Call mom at 10:01 am');
+  assert.equal(ahead.recurrence.date, '2026-10-07');
+  assert.deepEqual(ids(ahead), ['date_assumed']);
+});
+
+test('late evening: "tomorrow" rolls over the month and year correctly for a past time', () => {
+  assert.equal(parse('Call mom at 9 pm', new Date(2026, 11, 31, 23, 30)).recurrence.date, '2027-01-01');
+});
+
+test('the same sentences give the same dates in other time zones (the phone\'s local day rules)', () => {
+  for (const zone of ['Pacific/Kiritimati', 'Pacific/Pago_Pago', 'America/Los_Angeles', 'Asia/Kolkata', 'UTC']) {
+    withTimeZone(zone, () => {
+      const now = new Date(2026, 9, 7, 23, 30); // 23:30 on the phone, whatever the zone
+      assert.equal(parse('Email Christian tomorrow at 9 am', now).recurrence.date, '2026-10-08', zone);
+      assert.equal(parse('Call mom at 9 am', now).recurrence.date, '2026-10-08', zone);
+      assert.deepEqual(ids(parse('Call mom at 9 am', now)), ['past_time'], zone);
+      assert.equal(parse('Call mom at 11:45 pm', now).recurrence.date, '2026-10-07', zone);
+    });
+  }
+});
+
+test('an invalid clock time can never reach the form: "3 30 pm" is 15:30 and "30 pm" is not a time', () => {
+  const ok = parse('Pick up Christian from school tomorrow at 3 30 pm');
+  assert.equal(ok.name, 'Pick up Christian from school');
+  assert.equal(clock(ok.time), '15:30');
+  assert.equal(timeValue(ok.time), '15:30');
+  for (const said of ['Call mom tomorrow at 30 pm', 'Call mom tomorrow at 13 pm', 'Call mom tomorrow at 0 am']) {
+    const time = parse(said).time;
+    assert.ok(time === null || (time.hour >= 0 && time.hour <= 23), `${said} -> ${clock(time)}`);
+  }
 });

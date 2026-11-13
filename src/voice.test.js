@@ -117,3 +117,31 @@ test('accepted limitation: dangling "on" gets stripped from the name', () => {
     recurrence: { type: 'once', matchedText: [] },
   });
 });
+
+// ---- clock times that are not real (stabilization finding 5) ----
+import { extractExplicitTime } from './voice.js';
+
+test('"3 30 pm" (colon dropped by speech recognition) is 15:30', () => {
+  assert.deepEqual(extractExplicitTime('pick up at 3 30 pm'), { hour: 15, minute: 30, matchedText: '3 30 pm' });
+});
+
+test('REGRESSION: "30 pm" is not 42:00; numbers that cannot be an hour are skipped', () => {
+  assert.equal(extractExplicitTime('at 30 pm'), null);
+  assert.equal(extractExplicitTime('at 9:75 am'), null);
+  assert.equal(extractExplicitTime('at 30'), null);
+  for (const said of ['at 13 pm', 'at 0 am', 'at 99', 'at 24:00', 'at 7:60', 'at 8 99 pm']) {
+    const time = extractExplicitTime(said);
+    assert.ok(time === null || (time.hour >= 0 && time.hour <= 23 && time.minute >= 0 && time.minute <= 59), `${said} -> ${JSON.stringify(time)}`);
+  }
+});
+
+test('a later valid time is still found after an invalid number', () => {
+  assert.equal(extractExplicitTime('room 30 pm then at 4 pm').hour, 16);
+});
+
+test('plain times are unchanged', () => {
+  assert.equal(extractExplicitTime('at 8am').hour, 8);
+  assert.equal(extractExplicitTime('at 12 am').hour, 0);
+  assert.equal(extractExplicitTime('at 12 pm').hour, 12);
+  assert.deepEqual(extractExplicitTime('at 9:05 pm'), { hour: 21, minute: 5, matchedText: '9:05 pm' });
+});

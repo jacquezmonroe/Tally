@@ -5,15 +5,19 @@
 // need to be perfect.
 
 export function extractExplicitTime(text) {
-  let match = text.match(/(\d{1,2})(:(\d{2}))?\s*(am|pm)/i);
-  if (match) {
-    let hour = parseInt(match[1]);
-    const minute = match[3] ? parseInt(match[3]) : 0;
-    const isPM = match[4].toLowerCase() === 'pm';
+  // "9 am", "9:30 pm", and "3 30 pm" (speech often drops the colon). Only a
+  // real clock time counts: "30 pm" is not 42:00, so numbers that can't be an
+  // hour or minute are skipped.
+  for (const found of text.matchAll(/(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm)\b/gi)) {
+    let hour = parseInt(found[1]);
+    const minute = found[2] ? parseInt(found[2]) : 0;
+    if (hour < 1 || hour > 12 || minute > 59) continue;
+    const isPM = found[3].toLowerCase() === 'pm';
     if (isPM && hour !== 12) hour += 12;
     if (!isPM && hour === 12) hour = 0;
-    return { hour, minute, matchedText: match[0] };
+    return { hour, minute, matchedText: found[0] };
   }
+  let match;
   if (/\bnoon\b/i.test(text)) return { hour: 12, minute: 0, matchedText: 'noon' };
   if (/\bmidnight\b/i.test(text)) return { hour: 0, minute: 0, matchedText: 'midnight' };
   // A bare "at <hour>[:<minute>]" with no am/pm said at all — very common in
@@ -24,7 +28,11 @@ export function extractExplicitTime(text) {
   match = text.match(/\bat\s+(\d{1,2}(:\d{2})?)\b/i);
   if (match) {
     const [hourStr, minuteStr] = match[1].split(':');
-    return { hour: parseInt(hourStr) % 24, minute: minuteStr ? parseInt(minuteStr) : 0, matchedText: match[1], vague: true };
+    const hour = parseInt(hourStr);
+    const minute = minuteStr ? parseInt(minuteStr) : 0;
+    // "at 30" or "at 9:75" is not a time: say nothing rather than invent one.
+    if (hour > 23 || minute > 59) return null;
+    return { hour, minute, matchedText: match[1], vague: true };
   }
   return null;
 }
