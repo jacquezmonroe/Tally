@@ -77,10 +77,10 @@ export const DEFAULT_REMINDER_DEFAULTS = {
 
 // ---- Per-reminder colors ----
 export const REMINDER_COLORS = [
-  { id: 'teal', hex: '#0a4750', label: 'Deep teal' },
+  { id: 'teal', hex: '#0a4750', dark: '#5cc0cb', label: 'Deep teal' },
   { id: 'coral', hex: '#ff6b6b', label: 'Coral' },
   { id: 'amber', hex: '#ffb347', label: 'Amber' },
-  { id: 'violet', hex: '#6b3ded', label: 'Violet' },
+  { id: 'violet', hex: '#6b3ded', dark: '#a98bff', label: 'Violet' },
   { id: 'sky', hex: '#4ea8de', label: 'Sky' },
   { id: 'sage', hex: '#8fbc8f', label: 'Sage' },
   { id: 'rose', hex: '#f78fb3', label: 'Rose' },
@@ -98,6 +98,12 @@ export function normalizeReminderColor(id) {
 
 export function getReminderColorHex(id) {
   return REMINDER_COLORS.find(c => c.id === id)?.hex ?? null;
+}
+
+// A lighter stand-in for colors too dark to read on the dark background
+// (Deep teal, Violet). null means the normal hex works in both schemes.
+export function getReminderColorDarkHex(id) {
+  return REMINDER_COLORS.find(c => c.id === id)?.dark ?? null;
 }
 
 // Streaks are tracked by calendar date (see streak.js's todayKey), not

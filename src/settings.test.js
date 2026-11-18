@@ -6,6 +6,7 @@ import {
   getAccentTheme,
   normalizeReminderColor,
   getReminderColorHex,
+  getReminderColorDarkHex,
   REMINDER_COLORS,
   normalizeGreetingStyle,
   graceOccurrencesForHours,
@@ -115,4 +116,11 @@ test('every accent theme has a dark variant and getAccentTheme picks by scheme',
     assert.equal(getAccentTheme(id).accent, theme.accent); // light stays the default
   }
   assert.equal(getAccentTheme('nope', 'dark').accent, ACCENT_THEMES.teal.dark.accent);
+});
+
+test('getReminderColorDarkHex gives a lighter stand-in only for colors too dark on dark', () => {
+  assert.equal(getReminderColorDarkHex('teal'), '#5cc0cb');
+  assert.equal(getReminderColorDarkHex('violet'), '#a98bff');
+  assert.equal(getReminderColorDarkHex('coral'), null);
+  assert.equal(getReminderColorDarkHex(null), null);
 });

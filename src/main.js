@@ -32,6 +32,7 @@ import {
   REMINDER_COLORS,
   normalizeReminderColor,
   getReminderColorHex,
+  getReminderColorDarkHex,
   graceOccurrencesForHours,
   DEFAULT_QUIET_HOURS,
 } from './settings.js';
@@ -416,7 +417,7 @@ function burstConfetti(target = confettiEl, count = 24) {
 function renderColorSwatches(selectedId) {
   const auto = `<button type="button" class="color-swatch color-swatch--auto${selectedId ? '' : ' selected'}" data-color="" aria-label="Match app theme" title="Match app theme"></button>`;
   const swatches = REMINDER_COLORS.map(c => `
-    <button type="button" class="color-swatch${c.id === selectedId ? ' selected' : ''}" data-color="${c.id}" style="background:${c.hex}" aria-label="${c.label}" title="${c.label}"></button>
+    <button type="button" class="color-swatch${c.id === selectedId ? ' selected' : ''}" data-color="${c.id}" style="--sw:${c.hex}${c.dark ? `;--sw-dark:${c.dark}` : ''}" aria-label="${c.label}" title="${c.label}"></button>
   `).join('');
   return auto + swatches;
 }
@@ -1349,7 +1350,11 @@ function render({ animateEntrance = false } = {}) {
     const recurrenceLabel = describeRecurrence(reminder.recurrence);
     const colorHex = getReminderColorHex(reminder.color);
     item.className = 'reminder-item' + (taken ? ' taken' : '') + (colorHex ? ' has-color' : '');
-    if (colorHex) item.style.setProperty('--reminder-color', colorHex);
+    if (colorHex) {
+      item.style.setProperty('--reminder-color', colorHex);
+      const darkHex = getReminderColorDarkHex(reminder.color);
+      if (darkHex) item.style.setProperty('--reminder-color-dark', darkHex);
+    }
     // Upcoming reminders aren't due yet, so there's nothing to check off: a
     // calendar mark stands in for the checkbox and the label leads with the day.
     const leading = upcoming
