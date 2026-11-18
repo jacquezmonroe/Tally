@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
+import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, countBadge } from './due.js';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { todayKey } from './streak.js';
@@ -283,10 +283,32 @@ test('oneTimeDay returns the local day, and null for recurring reminders', () =>
   assert.equal(oneTimeDay(makeReminder()), null);
 });
 
-test('overdue and completed one-time reminders do not change the all-done banner or the badge count', () => {
+test('overdue and completed one-time reminders do not change the all-done banner or the today-only overdue count', () => {
   const list = [makeReminder({ id: 1, takenDate: TODAY }), onceOn(2, '2024-01-01'), onceOn(3, '2024-01-01', { takenDate: '2024-01-02' })];
   assert.equal(isAllDoneToday(list, at(12)), true);
   assert.equal(countOverdue(list, at(12)), 0);
+});
+
+test('the icon badge counts today\'s overdue plus unfinished one-time reminders from earlier days, never finished ones', () => {
+  const list = [
+    makeReminder({ id: 1, time: '08:00' }),                         // daily, 8:00 passed, not taken: overdue today
+    makeReminder({ id: 2, time: '23:00' }),                         // daily, not due yet
+    onceOn(3, '2024-01-08'),                                        // unfinished, earlier day
+    onceOn(4, '2024-01-01'),                                        // unfinished, earlier day
+    onceOn(5, '2024-01-02', { takenDate: '2024-01-02' }),           // finished earlier
+    onceOn(6, '2024-01-05', { takenDate: TODAY }),                  // finished today
+    onceOn(7, '2024-01-20'),                                        // in the future
+  ];
+  assert.equal(countOverdue(list, at(10)), 1);
+  assert.equal(countBadge(list, at(10)), 3);
+});
+
+test('the badge drops when an overdue one-time reminder is completed, and at local midnight an unfinished one starts counting', () => {
+  const r = onceOn(1, TODAY, { time: '23:59' });
+  assert.equal(countBadge([r], at(23, 58)), 0, 'its own day, time not passed yet');
+  assert.equal(countBadge([r], at(23, 59)), 1, 'its own day, minute reached: overdue today');
+  assert.equal(countBadge([r], new Date(2024, 0, 11, 0, 0)), 1, 'midnight: now overdue');
+  assert.equal(countBadge([{ ...r, takenDate: '2024-01-11' }], new Date(2024, 0, 11, 9, 0)), 0, 'completed');
 });
 
 // The same boundaries in different real time zones. The day rule must follow

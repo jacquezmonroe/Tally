@@ -4,7 +4,7 @@ import { Badge } from '@capawesome/capacitor-badge';
 import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
 import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
-import { getPendingToday, countOverdue, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
+import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
 import {
   ringProgress,
   ringDashOffset,
@@ -549,7 +549,7 @@ function renderGreeting() {
 let lastBadgeCount = null;
 
 async function updateBadge() {
-  const count = countOverdue(reminders);
+  const count = countBadge(reminders);
   if (count === lastBadgeCount) return;
   lastBadgeCount = count;
   try {

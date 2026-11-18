@@ -57,6 +57,12 @@ export function countOverdue(reminders, date = new Date()) {
   return reminders.filter(r => isOverdue(r, date)).length;
 }
 
+// The number on the app icon: what's overdue today, plus unfinished one-time
+// reminders from earlier days (they're listed under Overdue until dealt with).
+export function countBadge(reminders, date = new Date()) {
+  return countOverdue(reminders, date) + reminders.filter(r => isOverdueOneTime(r, date)).length;
+}
+
 // ---- Home tabs: Today / Upcoming / Done ----
 export const VIEWS = ['today', 'upcoming', 'done'];
 
