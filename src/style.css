@@ -378,6 +378,12 @@ body {
   border-left: 4px solid var(--rc);
 }
 
+/* Colors too dark for the dark background (Deep teal, Violet) carry a lighter
+   stand-in in --reminder-color-dark; the rest keep their one color. */
+:root[data-scheme="dark"] .reminder-item.has-color {
+  --rc: var(--reminder-color-dark, var(--reminder-color));
+}
+
 .reminder-item.has-color.taken {
   background: color-mix(in srgb, var(--rc) 14%, var(--color-card));
   border-color: color-mix(in srgb, var(--rc) 40%, var(--color-card));
@@ -636,6 +642,11 @@ body {
   display: none;
 }
 
+/* Settings is a list to scan, not a prompt to center: pin it to the top. */
+#settingsScreen .fullscreen-card {
+  margin: 0 auto;
+}
+
 /* auto margins center the card when it's short, but (unlike align-items:
    center) still let a tall one scroll from its top instead of clipping it */
 .fullscreen-card {
@@ -754,6 +765,14 @@ body {
   padding: 0;
   cursor: pointer;
   transition: var(--transition-ui);
+}
+
+.color-swatch:not(.color-swatch--auto) {
+  background: var(--sw);
+}
+
+:root[data-scheme="dark"] .color-swatch:not(.color-swatch--auto) {
+  background: var(--sw-dark, var(--sw));
 }
 
 .color-swatch.selected {
