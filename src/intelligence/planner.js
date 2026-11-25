@@ -5,7 +5,7 @@
 //  - It knows nothing about your calendar or availability. The window (rest of
 //    today, morning, afternoon, evening, or times you type) is the user's own
 //    choice and is always shown and editable.
-//  - It invents no durations. Tally stores none, so every task starts at a
+//  - It invents no durations. Tickmark stores none, so every task starts at a
 //    default estimate that is always labelled as an estimate and can be edited.
 //  - It never changes a reminder, its time, or its notification. A plan is a
 //    separate, suggested layout that only exists once the user saves it.
@@ -61,7 +61,7 @@ export function formatDuration(minutes) {
 
 // The window for a scope. "Rest of today" starts now and ends at the latest
 // known deadline (or when the work would be done, if that is later): it uses
-// what Tally knows, not a guess about the user's evening.
+// what Tickmark knows, not a guess about the user's evening.
 // -> { start, end }
 export function windowFor(scope, now = new Date(), reminders = [], estimates = {}) {
   if (scope !== 'rest' && SCOPES[scope]) return { start: SCOPES[scope].start, end: SCOPES[scope].end };

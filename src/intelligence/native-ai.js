@@ -5,7 +5,7 @@
 //
 // Every failure is normalised to { code, reason }. A missing plugin (plain
 // browser, or a build without it) is reported as 'plugin_unavailable' rather
-// than thrown, so unsupported setups degrade to the normal Tally experience.
+// than thrown, so unsupported setups degrade to the normal Tickmark experience.
 
 function normalizeError(e) {
   const code = e?.code === 'UNIMPLEMENTED' ? 'plugin_unavailable' : (e?.code || 'inference_failed');

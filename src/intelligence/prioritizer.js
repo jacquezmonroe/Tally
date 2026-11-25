@@ -1,7 +1,7 @@
 // "What should I focus on today?": ranks the reminders still pending today.
 //
 // The ranking is deterministic and explainable: every point comes from a named
-// factor with a human-readable reason, and every factor reads a field Tally
+// factor with a human-readable reason, and every factor reads a field Tickmark
 // actually stores (due time, overdue status, one-time vs repeating, streak,
 // step progress, and the importance the user chose). Nothing is guessed: a
 // reminder with no importance set counts as neutral, and a reminder's color is

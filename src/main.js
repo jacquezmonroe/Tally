@@ -1927,7 +1927,7 @@ voiceCancelBtn.addEventListener('click', async () => {
 });
 
 // ---- Today's focus ----
-// The order comes from rules (prioritizer.js) over what Tally stores. The
+// The order comes from rules (prioritizer.js) over what Tickmark stores. The
 // on-device model may only phrase a summary of that order. Changing a task's
 // importance is the user's override: it saves just that one field (no
 // notification is touched) and re-ranks straight away.

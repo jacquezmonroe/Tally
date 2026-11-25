@@ -86,7 +86,7 @@ function spokenTimesToDigits(text) {
 
 function normalizeRequest(raw) {
   let text = String(raw).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-  text = text.replace(/^(?:(?:please|hey tally,?|hey tickmark,?|can you|could you)\s+)+/i, '');
+  text = text.replace(/^(?:(?:please|hey tickmark,?|can you|could you)\s+)+/i, '');
   // "on Fridays" -> "every Friday" (voice.js only knows singular weekday names)
   text = text.replace(new RegExp(`\\b(?:on\\s+)?(${DAY_PATTERN})s\\b`, 'gi'), 'every $1');
   // "tomorrow's tasks" / "Friday's list" -> "tomorrow" / "Friday"

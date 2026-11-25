@@ -638,3 +638,18 @@ test('an invalid clock time can never reach the form: "3 30 pm" is 15:30 and "30
     assert.ok(time === null || (time.hour >= 0 && time.hour <= 23), `${said} -> ${clock(time)}`);
   }
 });
+
+// ---- the spoken lead-in ----
+
+test('"Hey Tickmark" at the start is not part of the title, with or without the comma', () => {
+  for (const said of ['Hey Tickmark, call Marcus tomorrow at 8 PM', 'hey tickmark call Marcus tomorrow at 8 PM', 'Please call Marcus tomorrow at 8 PM']) {
+    const draft = parse(said);
+    assert.equal(draft.name, 'Call Marcus', said);
+    assert.equal(clock(draft.time), '20:00', said);
+    assert.equal(draft.recurrence.date, '2026-10-08', said);
+  }
+});
+
+test('the old name is no longer a lead-in: "Hey Tally," stays in the title for the user to see', () => {
+  assert.equal(parse('Hey Tally, call Marcus tomorrow at 8 PM').name, 'Hey Tally, call Marcus');
+});

@@ -1,5 +1,7 @@
 # Build Journey: Tally
 
+> Note: Tally is now called **Tickmark**. This journey keeps the original name as history.
+
 How Tally came together, from idea to a working native iOS app.
 
 ## 1. The idea

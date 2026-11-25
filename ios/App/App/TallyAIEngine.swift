@@ -3,7 +3,7 @@ import Foundation
 import FoundationModels
 #endif
 
-// On-device AI for Tally, built on Apple's Foundation Models framework.
+// On-device AI for Tickmark, built on Apple's Foundation Models framework.
 //
 // Privacy rules this file exists to enforce:
 //  - Only `SystemLanguageModel.default` (the model on this device) is ever
@@ -15,7 +15,7 @@ import FoundationModels
 //
 // The app's deployment target stays iOS 15, so every Foundation Models symbol
 // sits behind `#if canImport` plus `#available(iOS 26.0, *)`; older systems
-// report "os_unsupported" and the rest of Tally is unaffected.
+// report "os_unsupported" and the rest of Tickmark is unaffected.
 
 struct TallyAIStatus {
     let available: Bool
