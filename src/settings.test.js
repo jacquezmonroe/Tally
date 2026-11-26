@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  rootFontSizeForSystemBody,
   ACCENT_THEMES,
   DEFAULT_ACCENT_THEME,
   getAccentTheme,
@@ -123,4 +124,23 @@ test('getReminderColorDarkHex gives a lighter stand-in only for colors too dark 
   assert.equal(getReminderColorDarkHex('violet'), '#a98bff');
   assert.equal(getReminderColorDarkHex('coral'), null);
   assert.equal(getReminderColorDarkHex(null), null);
+});
+
+// ---- Dynamic Type ----
+// iOS's body text is 17px at the default size. The app's layout is built on a
+// 16px root, so the root follows the user's text size in that proportion:
+// unchanged by default, larger or smaller as the user sets it.
+
+test('rootFontSizeForSystemBody: default iOS text size leaves the layout exactly as designed', () => {
+  assert.equal(rootFontSizeForSystemBody(17), 16);
+});
+
+test('rootFontSizeForSystemBody: follows larger and smaller text sizes, including accessibility sizes', () => {
+  assert.equal(rootFontSizeForSystemBody(23), 21.6); // xxxLarge
+  assert.equal(rootFontSizeForSystemBody(53), 49.9); // AX5
+  assert.equal(rootFontSizeForSystemBody(14), 13.2); // xSmall
+});
+
+test('rootFontSizeForSystemBody: unusable measurements fall back to the designed 16px', () => {
+  for (const bad of [0, -4, NaN, undefined, 'x', Infinity]) assert.equal(rootFontSizeForSystemBody(bad), 16);
 });

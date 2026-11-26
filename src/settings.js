@@ -138,3 +138,15 @@ export function isWithinQuietHours(hour, minute, quietHours) {
   }
   return t >= start || t < end; // overnight range
 }
+
+// ---- Text size (Dynamic Type) ----
+// The web view doesn't follow the iOS text size on its own. iOS's body text is
+// 17px at the default setting and the layout is built on a 16px root (every
+// font size is in rem), so the root scales by the same ratio.
+export const DESIGN_ROOT_PX = 16;
+export const IOS_DEFAULT_BODY_PX = 17;
+
+export function rootFontSizeForSystemBody(bodyPx) {
+  if (typeof bodyPx !== 'number' || !Number.isFinite(bodyPx) || bodyPx <= 0) return DESIGN_ROOT_PX;
+  return Math.round((DESIGN_ROOT_PX * bodyPx / IOS_DEFAULT_BODY_PX) * 10) / 10;
+}

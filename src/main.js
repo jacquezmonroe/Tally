@@ -35,6 +35,7 @@ import {
   getReminderColorDarkHex,
   graceOccurrencesForHours,
   DEFAULT_QUIET_HOURS,
+  rootFontSizeForSystemBody,
 } from './settings.js';
 import { intelligence } from './intelligence/default.js';
 import { applyAnswer, reminderCount, numberedNames, timeValue } from './intelligence/understand.js';
@@ -2224,8 +2225,23 @@ function armMidnightTimer() {
   }, msUntilNextLocalMidnight() + 1000);
 }
 
+// ---- Text size (Dynamic Type) ----
+// Only iOS's WebKit knows the system text styles; elsewhere (a desktop
+// browser preview) the designed 16px root is left alone.
+function applyTextSize() {
+  if (!(window.CSS && CSS.supports && CSS.supports('font', '-apple-system-body'))) return;
+  const probe = document.createElement('span');
+  probe.style.cssText = 'font: -apple-system-body; position: absolute; visibility: hidden;';
+  probe.textContent = 'x';
+  document.body.appendChild(probe);
+  const bodyPx = parseFloat(getComputedStyle(probe).fontSize);
+  probe.remove();
+  document.documentElement.style.fontSize = `${rootFontSizeForSystemBody(bodyPx)}px`;
+}
+
 // ---- Init ----
 async function init() {
+  applyTextSize();
   // Theme is applied first, before anything renders, to avoid a flash of
   // the default color. This is fully reliable in the web preview (see the
   // inline bootstrap script in index.html's <head>, which reads localStorage
@@ -2282,6 +2298,7 @@ document.addEventListener('visibilitychange', () => {
     // A notification may have set the badge natively while we were away, so
     // forget what we last set and re-sync instead of trusting it.
     lastBadgeCount = null;
+    applyTextSize(); // the text size may have been changed in iOS Settings meanwhile
     render();
     // The user may have changed the notification permission in iOS Settings.
     appReady.then(async () => {
