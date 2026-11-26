@@ -171,3 +171,26 @@ test('"at 0:30", "at 13:30" and "at 21" are unambiguous 24-hour times', () => {
   assert.equal(extractExplicitTime('take pills at 8').vague, true); // 8 could be AM or PM
   assert.equal(extractExplicitTime('take pills at 12:30').vague, true);
 });
+
+// ---- Monthly phrases leave nothing behind in the name ----
+// "on the 31st of every month" used to become "Pills of month".
+for (const [said, day] of [
+  ['pills on the 31st of every month at 9am', 31],
+  ['pills on the 15th of each month at 9am', 15],
+  ['pills on the 1st of the month at 9am', 1],
+  ['pills on the 15th every month at 9am', 15],
+  ['pills every month on the 15th at 9am', 15],
+  ['pills on the 2nd monthly at 9am', 2],
+]) {
+  test(`monthly: "${said}" is day ${day} with the name "Pills"`, () => {
+    const r = parseVoiceInput(said);
+    assert.equal(r.recurrence.type, 'monthlyDate');
+    assert.equal(r.recurrence.dayOfMonth, day);
+    assert.equal(r.name, 'Pills');
+  });
+}
+
+test('monthly: a plain "on the 15th" still works, and "month" in a real title is kept', () => {
+  assert.equal(parseVoiceInput('pills on the 15th at 9am').name, 'Pills');
+  assert.equal(parseVoiceInput('pay the month end bill on the 28th at 9am').name, 'Pay the month end bill');
+});

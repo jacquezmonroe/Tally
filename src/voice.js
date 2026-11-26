@@ -73,7 +73,12 @@ export function extractRecurrence(text, periodPhrase) {
     return { type: 'daily', matchedText: [periodPhrase.matchedText] };
   }
   let match = text.match(/on the (\d{1,2})(st|nd|rd|th)/i);
-  if (match) return { type: 'monthlyDate', dayOfMonth: parseInt(match[1]), matchedText: [match[0]] };
+  if (match) {
+    // "of every month", "every month", "of the month", "monthly" only repeat
+    // what the day already says, so they are stripped from the name as well.
+    const monthly = text.match(/\bof\s+(?:every|each|the)\s+month\b|\b(?:every|each)\s+month\b|\bmonthly\b/i);
+    return { type: 'monthlyDate', dayOfMonth: parseInt(match[1]), matchedText: monthly ? [match[0], monthly[0]] : [match[0]] };
+  }
 
   return { type: 'once', matchedText: [] };
 }
