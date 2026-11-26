@@ -9,6 +9,9 @@
 // the reminder id). classifyNotificationAction turns that event into one of
 // three decisions.
 
+import { appliesToday, isOverdueOneTime, isFinished } from './due.js';
+import { todayKey, markReminderTaken } from './streak.js';
+
 export const REMINDER_ACTION_TYPE_ID = 'REMINDER';
 export const MARK_TAKEN_ACTION_ID = 'MARK_TAKEN';
 
@@ -37,4 +40,47 @@ export function classifyNotificationAction(action) {
   if (action.actionId === MARK_TAKEN_ACTION_ID) return { kind: 'mark_taken', reminderId };
   if (action.actionId === 'tap') return { kind: 'open', reminderId };
   return { kind: 'ignore', reminderId };
+}
+
+// ---- Which day a "Mark Taken" press counts for ----
+// iOS can hand the press to the app later than it happened (it is held until
+// the app's JavaScript runs, possibly the next morning). So the press counts
+// for the day of the reminder's latest scheduled time at or before `now`, not
+// simply "today": a press for Monday's alert handled on Tuesday before
+// Tuesday's time must never mark Tuesday's dose as taken.
+// Known limit: if it is handled after the NEXT alert has also fired, the two
+// can't be told apart (the plugin doesn't pass the delivery date), and the
+// newer one is credited.
+
+const minutesOf = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+
+// Day key of the latest scheduled time at or before `now`, or null.
+function latestOccurrenceKey(reminder, now) {
+  if (appliesToday(reminder, now) && minutesOf(reminder.time) <= now.getHours() * 60 + now.getMinutes()) return todayKey(now);
+  for (let i = 1; i <= 366; i++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    if (appliesToday(reminder, day)) return todayKey(day);
+  }
+  return null;
+}
+
+// -> { kind: 'ignore' } | { kind: 'complete_today' } | { kind: 'credit_past', day }
+export function resolveMarkTaken(reminder, now = new Date()) {
+  if (!reminder) return { kind: 'ignore' };
+  if (reminder.recurrence && reminder.recurrence.type === 'once') {
+    return (appliesToday(reminder, now) || isOverdueOneTime(reminder, now)) && !isFinished(reminder, now)
+      ? { kind: 'complete_today' } : { kind: 'ignore' };
+  }
+  const day = latestOccurrenceKey(reminder, now);
+  if (day === null) return { kind: 'ignore' };
+  if (day === todayKey(now)) return isFinished(reminder, now) ? { kind: 'ignore' } : { kind: 'complete_today' };
+  const alreadyCounted = (reminder.takenDate && reminder.takenDate >= day) || (reminder.lastCompletedDate && reminder.lastCompletedDate >= day);
+  return alreadyCounted ? { kind: 'ignore' } : { kind: 'credit_past', day };
+}
+
+// Records a press for an earlier day: the streak counts that day, and
+// takenDate moves to it only if nothing later is already recorded.
+export function creditPastDay(reminder, day, graceOccurrences) {
+  const updated = markReminderTaken(reminder, day, graceOccurrences);
+  return { ...updated, takenDate: reminder.takenDate && reminder.takenDate > day ? reminder.takenDate : day };
 }

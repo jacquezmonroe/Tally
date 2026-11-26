@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { markReminderTaken, checkStaleStreaks, isOnGrace, getPreviousScheduledDate, todayKey } from './streak.js';
+import { markReminderTaken, checkStaleStreaks, isOnGrace, getPreviousScheduledDate, todayKey, takeToday, untakeToday } from './streak.js';
 
 function makeReminder(overrides = {}) {
   return {
@@ -257,4 +257,62 @@ test('isOnGrace is always false for monthlyDate and once reminders', () => {
   });
   assert.equal(isOnGrace(monthly, dateKey(base, 0)), false);
   assert.equal(isOnGrace(once, dateKey(base, 0)), false);
+});
+
+// ---- Time zone travel ----
+// Marked taken on Nov 26 in Tokyo, then flew to Honolulu where it is still
+// Nov 25: the last completion is "after" today. That is not a missed day.
+test('checkStaleStreaks: a last completion later than today (travel west) leaves the streak alone', () => {
+  const r = { id: 1, recurrence: { type: 'daily' }, takenDate: '2026-11-26', lastCompletedDate: '2026-11-26', currentStreak: 12, longestStreak: 12 };
+  assert.equal(checkStaleStreaks([r], '2026-11-25', 1)[0].currentStreak, 12);
+  assert.equal(checkStaleStreaks([r], '2026-11-25', 0)[0].currentStreak, 12);
+});
+
+// ---- Un-marking today's check-off gives back exactly what it added ----
+const daily = (over = {}) => ({ id: 1, recurrence: { type: 'daily' }, takenDate: null, currentStreak: 4, longestStreak: 4, lastCompletedDate: '2026-11-24', ...over });
+
+test('untakeToday: un-marking restores the streak, longest streak and last completion from before the check-off', () => {
+  const taken = takeToday(daily(), '2026-11-25', 1);
+  assert.equal(taken.takenDate, '2026-11-25');
+  assert.equal(taken.currentStreak, 5);
+  assert.equal(taken.longestStreak, 5);
+  const undone = untakeToday(taken, '2026-11-25');
+  assert.equal(undone.takenDate, null);
+  assert.equal(undone.currentStreak, 4);
+  assert.equal(undone.longestStreak, 4);
+  assert.equal(undone.lastCompletedDate, '2026-11-24');
+  assert.ok(!('streakUndo' in undone));
+});
+
+test('untakeToday: take, un-take, take again ends where a single take would', () => {
+  const once = takeToday(daily(), '2026-11-25', 1);
+  const again = takeToday(untakeToday(once, '2026-11-25'), '2026-11-25', 1);
+  assert.equal(again.currentStreak, once.currentStreak);
+  assert.equal(again.longestStreak, once.longestStreak);
+});
+
+test('untakeToday: un-marking then taking the next day does not count the un-marked day', () => {
+  const undone = untakeToday(takeToday(daily(), '2026-11-25', 1), '2026-11-25');
+  assert.equal(takeToday(undone, '2026-11-26', 0).currentStreak, 1); // the 25th was missed
+});
+
+test('untakeToday: a first-ever check-off un-marked goes back to no streak', () => {
+  const undone = untakeToday(takeToday(daily({ currentStreak: 0, longestStreak: 0, lastCompletedDate: null }), '2026-11-25', 1), '2026-11-25');
+  assert.deepEqual([undone.currentStreak, undone.longestStreak, undone.lastCompletedDate], [0, 0, null]);
+});
+
+test('untakeToday: without a matching record for today (old data, or a damaged one) it only clears the check-off', () => {
+  const old = daily({ takenDate: '2026-11-25', currentStreak: 5, longestStreak: 5, lastCompletedDate: '2026-11-25' });
+  assert.deepEqual([untakeToday(old, '2026-11-25').takenDate, untakeToday(old, '2026-11-25').currentStreak], [null, 5]);
+  const bad = { ...old, streakUndo: { day: '2026-11-25', currentStreak: 'x', longestStreak: -1, lastCompletedDate: 7 } };
+  assert.equal(untakeToday(bad, '2026-11-25').currentStreak, 5);
+  const stale = { ...old, streakUndo: { day: '2026-11-20', currentStreak: 1, longestStreak: 1, lastCompletedDate: null } };
+  assert.equal(untakeToday(stale, '2026-11-25').currentStreak, 5);
+});
+
+test('takeToday: one-time and monthly reminders get the check-off but no streak', () => {
+  const once = takeToday({ id: 2, recurrence: { type: 'once', date: '2026-11-25' }, takenDate: null, currentStreak: 0, longestStreak: 0, lastCompletedDate: null }, '2026-11-25', 1);
+  assert.equal(once.takenDate, '2026-11-25');
+  assert.equal(once.currentStreak, 0);
+  assert.equal(untakeToday(once, '2026-11-25').takenDate, null);
 });

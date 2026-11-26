@@ -65,7 +65,10 @@ export function resolveScheme(mode, systemPrefersDark) {
 }
 
 // ---- Reminder defaults ----
-export const GRACE_PERIOD_OPTIONS = [0, 12, 24, 48];
+// (A "12h" option existed, but behaved exactly like None — see
+// graceOccurrencesForHours — so it was removed; a saved 12 reads as 0.)
+export const GRACE_PERIOD_OPTIONS = [0, 24, 48];
+export const LEGACY_GRACE_HOURS_AS_NONE = 12;
 
 // defaultColor is a REMINDER_COLORS id, or null to follow the app's accent
 // theme (which is what every reminder did before per-reminder colors existed).
@@ -137,4 +140,16 @@ export function isWithinQuietHours(hour, minute, quietHours) {
     return t >= start && t < end;
   }
   return t >= start || t < end; // overnight range
+}
+
+// ---- Text size (Dynamic Type) ----
+// The web view doesn't follow the iOS text size on its own. iOS's body text is
+// 17px at the default setting and the layout is built on a 16px root (every
+// font size is in rem), so the root scales by the same ratio.
+export const DESIGN_ROOT_PX = 16;
+export const IOS_DEFAULT_BODY_PX = 17;
+
+export function rootFontSizeForSystemBody(bodyPx) {
+  if (typeof bodyPx !== 'number' || !Number.isFinite(bodyPx) || bodyPx <= 0) return DESIGN_ROOT_PX;
+  return Math.round((DESIGN_ROOT_PX * bodyPx / IOS_DEFAULT_BODY_PX) * 10) / 10;
 }

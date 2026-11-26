@@ -32,6 +32,8 @@ export function extractExplicitTime(text) {
     const minute = minuteStr ? parseInt(minuteStr) : 0;
     // "at 30" or "at 9:75" is not a time: say nothing rather than invent one.
     if (hour > 23 || minute > 59) return null;
+    // 0 and 13-23 can only be 24-hour clock times, so they aren't vague.
+    if (hour === 0 || hour >= 13) return { hour, minute, matchedText: match[1] };
     return { hour, minute, matchedText: match[1], vague: true };
   }
   return null;
@@ -55,9 +57,16 @@ export function extractRecurrence(text, periodPhrase) {
   for (const [name, num] of Object.entries(dayMap)) {
     if (new RegExp(`\\b${name}\\b`, 'i').test(text)) { foundDays.push(num); foundNames.push(name); }
   }
-  if (foundDays.length > 0) return { type: 'daysOfWeek', daysOfWeek: foundDays, matchedText: foundNames };
+  // With "every day" / "daily" also said, a weekday only sets the schedule
+  // when it is said as one ("every Monday", "on Monday", "each Monday");
+  // otherwise it is part of the title ("buy Friday paper every day").
+  const saysDaily = /\bevery ?day\b|\bdaily\b/i.test(text);
+  const asSchedule = (name) => new RegExp(`\\b(every|on|each)\\s+${name}\\b`, 'i').test(text);
+  if (foundDays.length > 0 && (!saysDaily || foundNames.some(asSchedule))) {
+    return { type: 'daysOfWeek', daysOfWeek: foundDays, matchedText: foundNames };
+  }
 
-  if (/\bevery ?day\b|\bdaily\b/i.test(text)) {
+  if (saysDaily) {
     return { type: 'daily', matchedText: [text.match(/every ?day|daily/i)[0]] };
   }
   if (periodPhrase?.impliesDaily) {

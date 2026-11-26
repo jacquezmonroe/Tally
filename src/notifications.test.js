@@ -16,8 +16,11 @@ import {
   createNotifier,
   SLOT_MAIN,
   SLOT_SNOOZE,
+  SLOT_MONTHLY_NEXT,
   SCHEME_KEY,
   SCHEME_VERSION,
+  ALERT_BUDGET,
+  IOS_PENDING_LIMIT,
 } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
 import { fakePlugin, fakePrefs } from './notifications.fake.js';
@@ -101,9 +104,9 @@ test('a weekly reminder uses one slot per day, matching the plugin weekday numbe
 // ---- what each alert contains ----
 
 test('daily, monthly, one-time and weekly alerts get the right schedule', () => {
-  const byType = Object.fromEntries(desired([rem(1), monthly(2, 31), once(3, '2026-12-25'), weekly(4, [6])]).items.map(i => [i.reminderId, i.notification]));
+  const byType = Object.fromEntries(desired([rem(1), monthly(2, 15), once(3, '2026-12-25'), weekly(4, [6])]).items.map(i => [i.reminderId, i.notification]));
   assert.deepEqual(byType[1].schedule, { on: { hour: 9, minute: 0 }, allowWhileIdle: true });
-  assert.deepEqual(byType[2].schedule, { on: { day: 31, hour: 9, minute: 0 }, allowWhileIdle: true });
+  assert.deepEqual(byType[2].schedule, { on: { day: 15, hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.deepEqual(byType[4].schedule, { on: { weekday: 7, hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.equal(byType[3].schedule.at.getFullYear(), 2026);
   assert.equal(byType[3].schedule.at.getMonth(), 11);
@@ -556,4 +559,174 @@ test('the engine touches no network or browser storage', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('./notifications.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '');
   for (const pattern of [/\bfetch\s*\(/, /XMLHttpRequest/, /localStorage/, /https?:\/\//, /document\./, /window\./]) assert.doesNotMatch(source, pattern);
+});
+
+// ---- iOS keeps only the 64 soonest pending alerts per app ----
+// iOS silently drops the rest. So the app schedules at most ALERT_BUDGET
+// (64 minus a few slots kept free for snoozes), keeps whole reminders in id
+// order, and reports the ones left out as 'over_limit'.
+
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+
+test('64-limit: the budget leaves room for snoozes under the iOS limit', () => {
+  assert.equal(IOS_PENDING_LIMIT, 64);
+  assert.ok(ALERT_BUDGET < IOS_PENDING_LIMIT);
+});
+
+test('64-limit: 10 every-day weekly reminders (70 alerts) never schedule past the budget and report the overflow', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: 10 }, (_, i) => weekly(i + 1, EVERY_DAY));
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.ok(plugin.pendingIds().length <= ALERT_BUDGET);
+  assert.equal(r.ok, false);
+  const over = r.failed.filter(f => f.reason === 'over_limit').map(f => f.reminderId);
+  assert.ok(over.length > 0);
+  // Older reminders keep their alerts; the newest ones are the ones left out.
+  assert.deepEqual(over, over.slice().sort((a, b) => a - b));
+  assert.ok(over.every(id => id > 10 - over.length));
+  // A reminder is either fully scheduled or not at all.
+  for (const id of over) assert.ok(!plugin.pendingIds().some(n => Math.floor(n / 16) === id));
+});
+
+test('64-limit: a small reminder after one that does not fit still gets its alert', async () => {
+  const plugin = fakePlugin();
+  const big = Array.from({ length: 8 }, (_, i) => weekly(i + 1, EVERY_DAY)); // 56
+  const reminders = [...big, weekly(9, EVERY_DAY), rem(10)];
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  const over = r.failed.filter(f => f.reason === 'over_limit').map(f => f.reminderId);
+  if (56 + 7 > ALERT_BUDGET) assert.deepEqual(over, [9]);
+  assert.ok(plugin.pendingIds().includes(notificationId(10, SLOT_MAIN)));
+});
+
+test('64-limit: exactly the budget is fine', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: ALERT_BUDGET }, (_, i) => rem(i + 1));
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(r.ok, true);
+  assert.equal(plugin.pendingIds().length, ALERT_BUDGET);
+});
+
+test('64-limit: an alert already scheduled for a reminder now over the limit is removed (so iOS cannot drop a different one)', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: ALERT_BUDGET }, (_, i) => rem(i + 1));
+  await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  const more = [...reminders, weekly(ALERT_BUDGET + 1, EVERY_DAY)];
+  const r = await reconcile({ plugin, reminders: more, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.deepEqual(r.failed.map(f => [f.reminderId, f.reason]), [[ALERT_BUDGET + 1, 'over_limit']]);
+  assert.equal(plugin.pendingIds().length, ALERT_BUDGET);
+});
+
+test('one-time reminder already marked done (early) has no alert left', async () => {
+  const plugin = fakePlugin();
+  const done = rem(1, { time: '18:00', recurrence: { type: 'once', date: TODAY }, takenDate: TODAY });
+  const notDone = rem(2, { time: '18:00', recurrence: { type: 'once', date: TODAY } });
+  assert.deepEqual(desiredNotifications({ reminders: [done, notDone], settings: SETTINGS, now: NOW, random: () => 0 }).items.map(i => i.reminderId), [2]);
+  // And one scheduled before it was marked done is removed by the next reconcile.
+  await reconcile({ plugin, reminders: [{ ...done, takenDate: null }], settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(plugin.pendingIds().length, 1);
+  await reconcile({ plugin, reminders: [done], settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(plugin.pendingIds().length, 0);
+});
+
+// ---- Monthly on the 29th, 30th or 31st ----
+// iOS can only repeat "day N", which skips months that have no day N. These
+// fall back to the month's last day, so they get one-time alerts for the next
+// two occurrences, refreshed on every reconcile (launch, resume, any change).
+
+test('monthly 31st: the next two occurrences are one-time alerts, clamped to the last day of short months', () => {
+  const now = new Date(2027, 3, 10, 12, 0); // Apr 10 2027
+  const items = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items;
+  assert.deepEqual(items.map(i => i.slot), [SLOT_MAIN, SLOT_MONTHLY_NEXT]);
+  const ats = items.map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate(), d.getHours()]), [[4, 30, 9], [5, 31, 9]]);
+  assert.ok(items.every(i => !i.notification.schedule.on));
+});
+
+test('monthly 31st: once today\'s time has passed, the next two start next month', () => {
+  const now = new Date(2027, 3, 30, 10, 0); // Apr 30 2027, after 09:00
+  const ats = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items.map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+});
+
+test('monthly 29th: Feb 28 in a common year, Feb 29 in a leap year', () => {
+  const at = (now) => desiredNotifications({ reminders: [monthly(2, 29)], settings: SETTINGS, now, random: () => 0 }).items[0].notification.schedule.at;
+  assert.deepEqual([at(new Date(2027, 1, 1)).getMonth(), at(new Date(2027, 1, 1)).getDate()], [1, 28]);
+  assert.deepEqual([at(new Date(2028, 1, 1)).getMonth(), at(new Date(2028, 1, 1)).getDate()], [1, 29]);
+});
+
+test('monthly 31st: reconcile moves on to the next occurrences after one fires (fingerprint changes)', async () => {
+  const plugin = fakePlugin();
+  await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 3, 10), random: () => 0 });
+  const r = await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 4, 1), random: () => 0 });
+  assert.deepEqual(r.scheduled, [2]);
+  const ats = plugin.pendingIds().map(id => new Date(plugin.pending.get(String(id)).schedule.at));
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+});
+
+test('monthly 28th and below still use one repeating alert', () => {
+  const items = desired([monthly(3, 28)]).items;
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].notification.schedule.on, { day: 28, hour: 9, minute: 0 });
+});
+
+// ---- A snooze belongs to today's occurrence ----
+const snoozePending = (reminderId, at) => ({ id: notificationId(reminderId, SLOT_SNOOZE), extra: { reminderId, fp: 'snooze' }, schedule: { at: at.toISOString() } });
+
+test('snooze: cancelled when the reminder was edited to a day it no longer applies', () => {
+  const now = new Date(2026, 9, 31, 9, 5);
+  const plan = planChanges({ desired: [], pending: [snoozePending(1, new Date(2026, 9, 31, 9, 15))], reminders: [once(1, '2026-12-10')], now });
+  assert.deepEqual(plan.toCancel, [notificationId(1, SLOT_SNOOZE)]);
+  const weeklyOther = weekly(2, [1]); // Oct 31 2026 is a Saturday
+  const plan2 = planChanges({ desired: [], pending: [snoozePending(2, new Date(2026, 9, 31, 9, 15))], reminders: [weeklyOther], now });
+  assert.deepEqual(plan2.toCancel, [notificationId(2, SLOT_SNOOZE)]);
+});
+
+test('snooze: kept for a reminder due today, an overdue one-time reminder, and across midnight', () => {
+  const now = new Date(2026, 9, 31, 9, 5);
+  const keep = (reminder, at, at2 = now) => planChanges({ desired: [], pending: [snoozePending(reminder.id, at)], reminders: [reminder], now: at2 }).keptSnoozes.length === 1;
+  assert.ok(keep(rem(1), new Date(2026, 9, 31, 9, 15)));
+  assert.ok(keep(once(3, '2026-10-29'), new Date(2026, 9, 31, 9, 15))); // listed under Overdue
+  // Snoozed at 23:55 to 00:05: still Oct 31's occurrence while it is Oct 31...
+  assert.ok(keep(rem(4, { time: '23:50' }), new Date(2026, 10, 1, 0, 5), new Date(2026, 9, 31, 23, 56)));
+  // ...and still wanted just after midnight, before it fires.
+  assert.ok(keep(rem(5, { time: '23:50' }), new Date(2026, 10, 1, 0, 5), new Date(2026, 10, 1, 0, 1)));
+});
+
+test('snooze: a Saturday-only reminder snoozed past midnight still fires early Sunday (the snooze records its day)', () => {
+  const sat = weekly(6, [6], { time: '23:50' });
+  const snooze = buildSnooze({ reminder: sat, settings: SETTINGS, userName: null, now: new Date(2026, 9, 31, 23, 55) });
+  assert.equal(snooze.extra.day, '2026-10-31');
+  const pending = [{ id: snooze.id, extra: snooze.extra, schedule: { at: snooze.schedule.at.toISOString() } }];
+  const plan = planChanges({ desired: [], pending, reminders: [sat], now: new Date(2026, 10, 1, 0, 2) });
+  assert.deepEqual(plan.keptSnoozes, [snooze.id]);
+  // Taken for Saturday (its day), the snooze is dropped even after midnight.
+  const plan2 = planChanges({ desired: [], pending, reminders: [{ ...sat, takenDate: '2026-10-31' }], now: new Date(2026, 10, 1, 0, 2) });
+  assert.deepEqual(plan2.toCancel, [snooze.id]);
+});
+
+// ---- The one-time upgrade cleanup never overlaps a reconcile ----
+// It cancels every pending alert, so overlapping a reconcile could remove
+// alerts that reconcile had just scheduled (e.g. a resume during launch).
+function notifierFor(plugin, reminders, prefs = fakePrefs()) {
+  return createNotifier({ plugin, prefs, getReminders: () => reminders, getSettings: () => SETTINGS, getUserName: () => null, now: () => NOW, random: () => 0 });
+}
+
+test('migrate while a reconcile is running: waits for it, never overlapping', async () => {
+  const plugin = fakePlugin();
+  plugin.pending.set('300', { id: 300, title: 'old', body: 'old', extra: {}, schedule: { on: { hour: 8, minute: 0 } } }); // old-scheme alert
+  const n = notifierFor(plugin, [rem(1)]);
+  const r = n.reconcile();
+  const m = n.migrate();
+  await Promise.all([r, m]);
+  assert.equal(plugin.maxActive, 1, 'plugin calls overlapped');
+});
+
+test('reconcile asked for while migrating: runs after it, so the cleanup cannot remove its alerts', async () => {
+  const plugin = fakePlugin();
+  const n = notifierFor(plugin, [rem(1)]);
+  const m = n.migrate();
+  const r = n.reconcile();
+  await Promise.all([m, r]);
+  assert.equal(plugin.maxActive, 1, 'plugin calls overlapped');
+  assert.deepEqual(plugin.pendingIds(), [notificationId(1, SLOT_MAIN)]);
 });

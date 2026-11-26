@@ -49,3 +49,11 @@ test('one reminder with two failures is counted once', () => {
   const s = summarizeAlerts(result({ ok: false, failed: [{ reminderId: 1, reason: 'schedule_failed' }, { reminderId: 1, reason: 'cancel_failed' }] }), rems);
   assert.equal(s.count, 1);
 });
+
+test('over the iPhone alert limit: its own banner and badge, so the user knows why', () => {
+  const s = summarizeAlerts(result({ ok: false, failed: [{ reminderId: 2, reason: 'over_limit' }, { reminderId: 3, reason: 'over_limit' }] }), rems);
+  assert.equal(s.kind, 'failed');
+  assert.match(alertBannerText(s), /64/);
+  assert.match(alertBannerText(s), /2 reminders/);
+  assert.equal(alertBadgeText('over_limit'), 'Over iPhone alert limit');
+});
