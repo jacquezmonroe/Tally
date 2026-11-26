@@ -22,6 +22,7 @@ import {
   SCHEME_VERSION,
   ALERT_BUDGET,
   IOS_PENDING_LIMIT,
+  SNOOZE_RESERVE,
 } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
 import { fakePlugin, fakePrefs } from './notifications.fake.js';
@@ -553,6 +554,43 @@ test('snooze reports why it could not be scheduled', async () => {
   const r = await make(failing).snooze(rem(1));
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'schedule_failed');
+});
+
+// ---- Snoozes stay inside the room the budget leaves for them ----
+// The alert budget (60) leaves SNOOZE_RESERVE (4) of iOS's 64 for snoozes.
+// A 5th snooze waiting at once would push the total past 64, and iOS would
+// silently drop a reminder's alert, so it is refused instead (and said so).
+
+async function fullBudget() {
+  const reminders = Array.from({ length: ALERT_BUDGET }, (_, i) => rem(i + 1));
+  const plugin = fakePlugin();
+  const notifier = createNotifier({ plugin, prefs: fakePrefs(), getReminders: () => reminders, getSettings: () => SETTINGS, getUserName: () => null, now: () => NOW, random: () => 0 });
+  await notifier.reconcile();
+  return { reminders, plugin, notifier };
+}
+
+test('snooze: up to SNOOZE_RESERVE snoozes may wait at once; one more is refused, and iOS never holds more than 64', async () => {
+  const { reminders, plugin, notifier } = await fullBudget();
+  for (let i = 0; i < SNOOZE_RESERVE; i++) assert.deepEqual(await notifier.snooze(reminders[i]), { ok: true });
+  assert.equal(plugin.pending.size, IOS_PENDING_LIMIT);
+  assert.deepEqual(await notifier.snooze(reminders[SNOOZE_RESERVE]), { ok: false, reason: 'over_limit' });
+  assert.equal(plugin.pending.size, IOS_PENDING_LIMIT);
+});
+
+test('snooze: snoozing an already-snoozed reminder again replaces it, so it is allowed even when the room is full', async () => {
+  const { reminders, plugin, notifier } = await fullBudget();
+  for (let i = 0; i < SNOOZE_RESERVE; i++) await notifier.snooze(reminders[i]);
+  assert.deepEqual(await notifier.snooze(reminders[0]), { ok: true });
+  assert.equal(plugin.pending.size, IOS_PENDING_LIMIT);
+});
+
+test('snooze: if the waiting alerts cannot be read, the snooze is refused rather than risk going past 64', async () => {
+  const { reminders, plugin, notifier } = await fullBudget();
+  plugin.failPending = true;
+  const r = await notifier.snooze(reminders[0]);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'schedule_failed');
+  assert.equal(plugin.pending.size, ALERT_BUDGET);
 });
 
 // ---- no network, storage or UI in the engine ----

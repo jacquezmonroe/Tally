@@ -1657,6 +1657,8 @@ detailSnoozeBtn.addEventListener('click', async () => {
     showToast(`Snoozed for ${SNOOZE_MINUTES} minutes`);
   } else if (result.reason === 'permission_denied') {
     showToast('Notifications are off for Tickmark. Turn them on in Settings.');
+  } else if (result.reason === 'over_limit') {
+    showToast("Couldn't snooze: too many snoozes are already waiting. Try again in a few minutes.");
   } else {
     showToast("Couldn't snooze — check that notifications are allowed");
   }

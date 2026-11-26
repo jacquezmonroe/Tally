@@ -418,12 +418,20 @@ export function createNotifier({ plugin, prefs, getReminders, getSettings, getUs
     // -> { ok, reason? }  Schedules one snooze alert. It does not reconcile: a
     // later reconcile keeps a snooze while the reminder exists, is not taken
     // today, and the snooze time is still ahead (see planChanges).
+    // At most SNOOZE_RESERVE snoozes wait at once (the room the alert budget
+    // leaves under iOS's 64); one more is refused with 'over_limit', since iOS
+    // would otherwise silently drop a reminder's alert. Re-snoozing the same
+    // reminder replaces its snooze, so it always fits.
     async snooze(reminder, minutes = SNOOZE_MINUTES) {
       const permission = await readPermission(plugin);
       if (permission === 'unavailable') return { ok: false, reason: 'unavailable' };
       if (permission !== 'granted') return { ok: false, reason: 'permission_denied' };
       try {
-        await plugin.schedule({ notifications: [buildSnooze({ reminder, settings: getSettings(), userName: getUserName(), now: now(), minutes, random })] });
+        const snooze = buildSnooze({ reminder, settings: getSettings(), userName: getUserName(), now: now(), minutes, random });
+        const pending = (await plugin.getPending()).notifications || [];
+        const otherSnoozes = pending.filter(p => p.id !== snooze.id && decodeNotificationId(p.id)?.slot === SLOT_SNOOZE).length;
+        if (otherSnoozes >= SNOOZE_RESERVE) return { ok: false, reason: 'over_limit' };
+        await plugin.schedule({ notifications: [snooze] });
         return { ok: true };
       } catch (e) {
         return { ok: false, reason: 'schedule_failed', message: messageOf(e) };
