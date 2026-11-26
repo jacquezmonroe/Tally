@@ -653,3 +653,9 @@ test('"Hey Tickmark" at the start is not part of the title, with or without the 
 test('the old name is no longer a lead-in: "Hey Tally," stays in the title for the user to see', () => {
   assert.equal(parse('Hey Tally, call Marcus tomorrow at 8 PM').name, 'Hey Tally, call Marcus');
 });
+
+test('"every day" next to a weekday word in the title is daily, with no silent weekly switch', () => {
+  const d = parse('buy Friday paper every day at 9 am');
+  assert.equal(d.recurrence.type, 'daily');
+  assert.equal(d.name, 'Buy Friday paper');
+});

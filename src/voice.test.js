@@ -145,3 +145,20 @@ test('plain times are unchanged', () => {
   assert.equal(extractExplicitTime('at 12 pm').hour, 12);
   assert.deepEqual(extractExplicitTime('at 9:05 pm'), { hour: 21, minute: 5, matchedText: '9:05 pm' });
 });
+
+// "every day" wins over a weekday name that is just part of the title.
+test('"every day" with a weekday word in the title stays daily, and the weekday stays in the name', () => {
+  const r = parseVoiceInput('buy Friday paper every day at 9 am');
+  assert.deepEqual(r.recurrence.type, 'daily');
+  assert.equal(r.name, 'Buy Friday paper');
+});
+
+test('"daily" with a weekday word in the title stays daily', () => {
+  assert.equal(parseVoiceInput('check the Monday report daily at 8 am').recurrence.type, 'daily');
+});
+
+test('a weekday that is itself the schedule still wins ("every Monday", "on Monday")', () => {
+  assert.deepEqual(parseVoiceInput('every day stretch, and every Monday weigh in at 9 am').recurrence.daysOfWeek, [1]);
+  assert.deepEqual(parseVoiceInput('take pills on Monday at 9 am').recurrence.daysOfWeek, [1]);
+  assert.deepEqual(parseVoiceInput('water plants every Monday at 9 am').recurrence.daysOfWeek, [1]);
+});
