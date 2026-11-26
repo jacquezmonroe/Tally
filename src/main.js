@@ -91,6 +91,7 @@ const prefsAdapter = {
   async get(key) { const { value } = await Preferences.get({ key }); return value; },
   set: (key, value) => Preferences.set({ key, value }),
   remove: (key) => Preferences.remove({ key }),
+  async keys() { return (await Preferences.keys()).keys; },
 };
 const storage = createReminderStorage({
   prefs: prefsAdapter,
@@ -192,6 +193,8 @@ const focusListEl = document.getElementById('focusList');
 const recoveryBanner = document.getElementById('recoveryBanner');
 const recoveryBannerText = document.getElementById('recoveryBannerText');
 const recoveryDismissBtn = document.getElementById('recoveryDismissBtn');
+const recoveryExportEl = document.getElementById('recoveryExport');
+const recoveryCopyBtn = document.getElementById('recoveryCopyBtn');
 const nlInput = document.getElementById('nlInput');
 const nlFillBtn = document.getElementById('nlFillBtn');
 const understandPanel = document.getElementById('understandPanel');
@@ -502,7 +505,20 @@ async function refreshRecoveryNotice() {
   const text = describeNotice(notice);
   recoveryBannerText.textContent = text;
   recoveryBanner.hidden = !text;
+  recoveryExportEl.hidden = !(await storage.collectRecoveryData());
 }
+
+// Settings → Privacy: copies everything set aside during a recovery.
+recoveryCopyBtn.addEventListener('click', async () => {
+  const data = await storage.collectRecoveryData();
+  if (!data) { recoveryExportEl.hidden = true; return; }
+  try {
+    await navigator.clipboard.writeText(data.text);
+    showToast('Copied. Paste it into Notes or an email to keep it.');
+  } catch {
+    showToast("Couldn't copy. Try again.");
+  }
+});
 
 async function saveReminders() {
   return storage.saveReminders(reminders);

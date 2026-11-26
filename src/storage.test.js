@@ -37,6 +37,7 @@ function fakePrefs(initial = {}, { failSet = () => false, failGet = () => false 
     async get(key) { if (failGet(key)) throw new Error('get failed'); return store.has(key) ? store.get(key) : null; },
     async set(key, value) { log.push(['set', key]); if (failSet(key)) throw new Error('set failed'); store.set(key, value); },
     async remove(key) { log.push(['remove', key]); store.delete(key); },
+    async keys() { return [...store.keys()]; },
   };
 }
 const storageFor = (prefs) => createReminderStorage({ prefs, keys: KEYS, now: () => NOW });
@@ -498,4 +499,40 @@ test('end to end: load, add, save, reload keeps everything', async () => {
   assert.deepEqual(again.reminders.map(r => r.name), ['Take vitamins', 'New one']);
   assert.equal(again.nextId, 3);
   assert.equal(again.notice, null);
+});
+
+// ---- Getting set-aside data back out ----
+// Records that couldn't be read are kept (quarantine) and originals are backed
+// up, but the user needs a way to take them somewhere safe.
+test('collectRecoveryData: nothing set aside -> null', async () => {
+  const prefs = fakePrefs({ 'tally-reminders': '[]', 'tally-next-id': '1' });
+  const store = createReminderStorage({ prefs, keys: { reminders: 'tally-reminders', nextId: 'tally-next-id' } });
+  assert.equal(await store.collectRecoveryData(), null);
+});
+
+test('collectRecoveryData: after a damaged load, the backup and set-aside records are all in the export, unaltered', async () => {
+  const raw = JSON.stringify([{ id: 1, name: 'Good', time: '08:00' }, { id: 2, name: '', time: 'nope' }]);
+  const prefs = fakePrefs({ 'tally-reminders': raw, 'tally-next-id': '3' });
+  const store = createReminderStorage({ prefs, keys: { reminders: 'tally-reminders', nextId: 'tally-next-id' }, now: () => new Date('2026-11-25T10:00:00Z') });
+  await store.load();
+  const data = await store.collectRecoveryData();
+  assert.equal(data.count, 2); // one backup of the original, one quarantine list
+  const parsed = JSON.parse(data.text);
+  const backupKey = Object.keys(parsed.items).find(k => k.startsWith('tally-reminders-backup-'));
+  assert.equal(parsed.items[backupKey], raw);
+  assert.match(parsed.items['tally-reminders-quarantine'], /nope/);
+  assert.ok(!('tally-reminders' in parsed.items), 'live data is not part of the export');
+});
+
+test('collectRecoveryData: a store that cannot list keys returns null instead of throwing', async () => {
+  const prefs = fakePrefs();
+  delete prefs.keys;
+  const store = createReminderStorage({ prefs, keys: { reminders: 'tally-reminders', nextId: 'tally-next-id' } });
+  assert.equal(await store.collectRecoveryData(), null);
+});
+
+test('describeNotice: set-aside or unreadable data says where to copy it', () => {
+  assert.match(describeNotice({ recovered: 3, quarantined: 2 }), /Settings → Privacy/);
+  assert.match(describeNotice({ unreadable: true }), /Settings → Privacy/);
+  assert.doesNotMatch(describeNotice({ recovered: 1, quarantined: 0, repaired: 1 }), /Privacy/);
 });

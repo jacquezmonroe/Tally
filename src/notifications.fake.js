@@ -96,5 +96,6 @@ export function fakePrefs(initial = {}, { failSet = () => false } = {}) {
     async get(key) { return store.has(key) ? store.get(key) : null; },
     async set(key, value) { if (failSet(key)) throw new Error('set failed'); store.set(key, value); },
     async remove(key) { store.delete(key); },
+    async keys() { return [...store.keys()]; },
   };
 }
