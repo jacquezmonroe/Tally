@@ -115,6 +115,56 @@ test('daily, monthly, one-time and weekly alerts get the right schedule', () => 
   assert.deepEqual(byType[3].schedule, { on: { year: 2026, month: 12, day: 25, hour: 9, minute: 0 }, allowWhileIdle: true });
 });
 
+// ---- The badge each alert sets ----
+// iOS sets the app icon badge to the alert's own number (it can't add one).
+// So each alert carries how many reminders will be overdue when it fires,
+// counted like the in-app badge (countBadge), and never less than 1: a badge
+// of 0 would also clear Notification Center.
+const badgeOf = (items, id) => items.find(i => i.reminderId === id).notification.badge;
+
+test('badge: three untaken 09:00/09:05/09:10 reminders show 1, 2, 3 as each alert arrives', () => {
+  const now = new Date(2026, 10, 26, 8, 0);
+  const rs = [rem(1, { time: '09:00' }), rem(2, { time: '09:05' }), rem(3, { time: '09:10' })];
+  const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
+  assert.deepEqual(items.map(i => i.notification.badge), [1, 2, 3]);
+});
+
+test('badge: a reminder already taken today is not counted', () => {
+  const now = new Date(2026, 10, 26, 8, 0);
+  const rs = [rem(1, { time: '09:00', takenDate: '2026-11-26' }), rem(2, { time: '09:05' }), rem(3, { time: '09:10' })];
+  const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
+  assert.deepEqual(items.map(i => i.notification.badge), [1, 1, 2], 'the taken one never drops the badge to 0');
+});
+
+test('badge: an unfinished one-time reminder from an earlier day counts on every alert', () => {
+  const now = new Date(2026, 10, 26, 8, 0);
+  const rs = [once(1, '2026-11-20'), rem(2, { time: '09:00' })];
+  const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
+  assert.equal(badgeOf(items, 2), 2);
+});
+
+test('badge: once today\'s time has passed, a daily alert counts for its next firing, tomorrow', () => {
+  const now = new Date(2026, 10, 26, 9, 30); // Thu; 09:00 has passed, 09:10 has not
+  const rs = [rem(1, { time: '09:00' }), rem(2, { time: '09:10' })];
+  const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
+  // Tomorrow at 09:00 only reminder 1 is due; today at 09:10 both are overdue.
+  assert.deepEqual([badgeOf(items, 1), badgeOf(items, 2)], [1, 2]);
+});
+
+test('badge: a weekly alert counts the reminders of ITS day', () => {
+  const now = new Date(2026, 10, 26, 8, 0); // Thursday
+  const rs = [weekly(1, [1], { time: '09:00' }), weekly(2, [1], { time: '09:05' }), rem(3, { time: '08:30' })];
+  const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
+  assert.equal(badgeOf(items, 2), 3, 'Monday 09:05: both Monday reminders and the daily 08:30');
+});
+
+test('badge: a snooze counts what is overdue when it fires, and is at least 1', () => {
+  const now = new Date(2026, 10, 26, 9, 30);
+  const rs = [rem(1, { time: '09:00' }), rem(2, { time: '09:15' }), rem(3, { time: '11:00' })];
+  assert.equal(buildSnooze({ reminder: rs[0], reminders: rs, settings: SETTINGS, now, random: () => 0 }).badge, 2);
+  assert.equal(buildSnooze({ reminder: rs[2], reminders: [rs[2]], settings: SETTINGS, now, random: () => 0 }).badge, 1, 'snoozed before its time: still 1');
+});
+
 // ---- One-time alerts follow the phone's time zone ----
 // An `at` time becomes an iOS countdown (a fixed instant), so after flying it
 // fired at the OLD zone's wall time until the app was opened. A calendar date
@@ -150,7 +200,7 @@ test('one-time: a time in the repeated fall-back hour is a normal calendar alert
 test('every alert carries the title, badge, action button and its reminder id, fingerprint and own time', () => {
   for (const { notification, reminderId, fingerprint } of desired([rem(8), weekly(9, [2], { time: '07:45' })]).items) {
     assert.equal(notification.title, 'Tickmark');
-    assert.equal(notification.badge, 1);
+    assert.ok(Number.isInteger(notification.badge) && notification.badge >= 1, 'a badge number, never 0 (0 would clear Notification Center)');
     assert.equal(notification.actionTypeId, 'REMINDER');
     // The time lets a Mark Taken press on this alert be counted for the right
     // day even if the reminder's time was edited after the alert fired.
@@ -267,13 +317,26 @@ test('IDEMPOTENT: a second run changes nothing, even with different random wordi
 });
 
 test('editing one reminder reschedules only that one', async () => {
+  // Distinct times, so the edit changes no other alert's badge count (see the next test).
   const plugin = fakePlugin();
-  await run(plugin, [rem(1), rem(2), rem(3)]);
+  await run(plugin, [rem(1, { time: '08:00' }), rem(2), rem(3, { time: '11:00' })]);
   plugin.resetCalls();
-  const r = await run(plugin, [rem(1), rem(2, { time: '10:30' }), rem(3)]);
+  const r = await run(plugin, [rem(1, { time: '08:00' }), rem(2, { time: '10:30' }), rem(3, { time: '11:00' })]);
   assert.deepEqual(r.scheduled, [2]);
   assert.deepEqual(r.unchanged.sort(), [1, 3]);
   assert.deepEqual(plugin.pending.get(String(2 * 16)).schedule.on, { hour: 10, minute: 30 });
+});
+
+test('an edit that changes other alerts\' badge counts reschedules those too, in place; a second run changes nothing', async () => {
+  const plugin = fakePlugin();
+  await run(plugin, [rem(1), rem(2), rem(3)]); // all 09:00: each alert's badge is 3
+  const ids = plugin.pendingIds();
+  const r = await run(plugin, [rem(1), rem(2, { time: '10:30' }), rem(3)]);
+  assert.deepEqual(r.scheduled.sort(), [1, 2, 3]);
+  assert.deepEqual(plugin.pendingIds(), ids, 'same ids: replaced, never duplicated');
+  assert.deepEqual([1, 3].map(id => plugin.pending.get(String(id * 16)).badge), [2, 2]);
+  const again = await run(plugin, [rem(1), rem(2, { time: '10:30' }), rem(3)]);
+  assert.deepEqual(again.scheduled, []);
 });
 
 test('switching weekly to daily removes the weekday alerts: no orphans', async () => {

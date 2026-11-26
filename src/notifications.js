@@ -36,7 +36,7 @@
 // Quiet hours: the alert still arrives on time, silently (no `sound`).
 
 import { getNotificationBody } from './personalization.js';
-import { isExpiredOneTime, appliesToday, isOverdueOneTime, dateFromKey } from './due.js';
+import { isExpiredOneTime, appliesToday, isOverdueOneTime, dateFromKey, countBadge } from './due.js';
 import { isWithinQuietHours } from './settings.js';
 import { todayKey } from './streak.js';
 import { reminderActionTypes, REMINDER_ACTION_TYPE_ID } from './notificationActions.js';
@@ -141,6 +141,30 @@ function slotsFor(reminder) {
   return isMonthEnd(rec) ? [SLOT_MAIN, SLOT_MONTHLY_NEXT, SLOT_MONTHLY_NEXT_2] : [SLOT_MAIN];
 }
 
+// ---- The badge an alert sets ----
+// iOS sets the app icon badge to the alert's own number; it can't add one. So
+// each alert carries how many reminders will be overdue when it next fires,
+// counted exactly like the in-app badge (countBadge). Never less than 1: a
+// badge of 0 would also clear Notification Center. A repeating alert's number
+// is for its next firing; every reconcile (launch, resume, check-off) renews it.
+
+// When this schedule next fires after `now`, as the plugin's triggers do.
+function nextFireTime(schedule, now) {
+  if (schedule.at) return schedule.at;
+  const { year, month, day, weekday, hour, minute } = schedule.on;
+  if (year !== undefined) return new Date(year, month - 1, day, hour, minute);
+  for (let i = 0; i <= 366; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hour, minute);
+    if (d <= now) continue;
+    if (weekday !== undefined && d.getDay() !== weekday - 1) continue;
+    if (day !== undefined && d.getDate() !== day) continue;
+    return d;
+  }
+  return null;
+}
+
+const badgeAt = (reminders, when) => (when ? Math.max(1, countBadge(reminders, when)) : 1);
+
 // -> { items: [{ id, reminderId, slot, fingerprint, notification }], problems: [{ reminderId, reason }] }
 // An expired or already-completed one-time reminder has nothing left to alert about. A reminder
 // that can't be given a valid id or time is reported, never thrown on.
@@ -162,9 +186,10 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
     const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     for (const slot of slotsFor(reminder)) {
       const schedule = scheduleFor(reminder, slot, hour, minute, now);
+      const badge = badgeAt(reminders, nextFireTime(schedule, now));
       const fingerprint = fingerprintOf({
         v: SCHEME_VERSION, slot, name: reminder.name, userName: userName || '',
-        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge: 1, action: REMINDER_ACTION_TYPE_ID, time,
+        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge, action: REMINDER_ACTION_TYPE_ID, time,
       });
       items.push({
         id: notificationId(reminder.id, slot),
@@ -177,7 +202,7 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
           body: getNotificationBody(reminder.name, userName, random()),
           schedule,
           ...(sound ? { sound } : {}),
-          badge: 1,
+          badge,
           actionTypeId: REMINDER_ACTION_TYPE_ID,
           extra: { reminderId: reminder.id, fp: fingerprint, time },
         },
@@ -188,8 +213,8 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
 }
 
 // The snooze alert: one extra one-time alert a few minutes from now, built the
-// same way as the others (same sound rules, same action button).
-export function buildSnooze({ reminder, settings, userName, now = new Date(), minutes = SNOOZE_MINUTES, random = Math.random }) {
+// same way as the others (same sound rules, same action button, same badge count).
+export function buildSnooze({ reminder, reminders = [reminder], settings, userName, now = new Date(), minutes = SNOOZE_MINUTES, random = Math.random }) {
   const at = new Date(now.getTime() + minutes * 60 * 1000);
   const sound = soundFor(at.getHours(), at.getMinutes(), settings);
   return {
@@ -198,7 +223,7 @@ export function buildSnooze({ reminder, settings, userName, now = new Date(), mi
     body: getNotificationBody(reminder.name, userName, random()),
     schedule: { at, allowWhileIdle: true },
     ...(sound ? { sound } : {}),
-    badge: 1,
+    badge: badgeAt(reminders, at),
     actionTypeId: REMINDER_ACTION_TYPE_ID,
     extra: { reminderId: reminder.id, fp: 'snooze', day: todayKey(now) }, // the day this snooze belongs to
   };
@@ -437,7 +462,7 @@ export function createNotifier({ plugin, prefs, getReminders, getSettings, getUs
       if (permission === 'unavailable') return { ok: false, reason: 'unavailable' };
       if (permission !== 'granted') return { ok: false, reason: 'permission_denied' };
       try {
-        const snooze = buildSnooze({ reminder, settings: getSettings(), userName: getUserName(), now: now(), minutes, random });
+        const snooze = buildSnooze({ reminder, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), minutes, random });
         const pending = (await plugin.getPending()).notifications || [];
         const otherSnoozes = pending.filter(p => p.id !== snooze.id && decodeNotificationId(p.id)?.slot === SLOT_SNOOZE).length;
         if (otherSnoozes >= SNOOZE_RESERVE) return { ok: false, reason: 'over_limit' };
