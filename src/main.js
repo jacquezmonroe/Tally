@@ -69,7 +69,7 @@ import {
 import { classifyNotificationAction, resolveMarkTaken, creditPastDay } from './notificationActions.js';
 import { createReminderStorage, parseQuietHours, parseReminderDefaults, describeNotice } from './storage.js';
 import { createNotifier, SNOOZE_MINUTES } from './notifications.js';
-import { createReminderActions } from './reminderActions.js';
+import { createReminderActions, describeMissingField } from './reminderActions.js';
 import { summarizeAlerts, alertBannerText, alertBadgeText } from './alertStatus.js';
 import './style.css';
 import './alerts.css';
@@ -1475,7 +1475,8 @@ addForm.addEventListener('submit', async (e) => {
   const name = nameInput.value.trim();
   const time = timeInput.value;
   const recurrence = readRecurrenceFromForm(addForm);
-  if (!name || !time || !recurrence) return;
+  const missing = describeMissingField({ name, time, recurrenceType: addForm.querySelector('.recurrence-select').value, recurrence });
+  if (missing) { showToast(missing); return; }
   const color = readColorFromContainer(colorFieldsEl);
   const notes = notesInput.value.trim();
   const importance = importanceInput.value;
@@ -1879,7 +1880,9 @@ editForm.addEventListener('submit', async (e) => {
   const name = editNameInput.value.trim();
   const time = editTimeInput.value;
   const recurrence = readRecurrenceFromForm(editForm);
-  if (!name || !time || !recurrence || editingId === null) return;
+  if (editingId === null) return;
+  const missing = describeMissingField({ name, time, recurrenceType: editForm.querySelector('.recurrence-select').value, recurrence });
+  if (missing) { showToast(missing); return; }
   if (!(await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value))) return;
   if (detailId !== null) renderDetail(); // refresh it before Back reveals it
   closeEdit();

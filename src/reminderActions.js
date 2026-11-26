@@ -12,6 +12,21 @@
 import { normalizeImportance } from './intelligence/prioritizer.js';
 import { MAX_REMINDER_ID } from './storage.js';
 
+// What the add / edit form still needs, as a message for the user, or null
+// when nothing is missing. recurrence is the form's reading (null when the
+// chosen repeat type is incomplete); recurrenceType is what was chosen.
+export function describeMissingField({ name, time, recurrenceType, recurrence }) {
+  if (!name || !name.trim()) return 'Give the reminder a name.';
+  if (!time) return 'Pick a time.';
+  if (!recurrence) {
+    if (recurrenceType === 'daysOfWeek') return 'Pick at least one day.';
+    if (recurrenceType === 'monthlyDate') return 'Pick a day of the month from 1 to 31.';
+    if (recurrenceType === 'once') return 'Pick a date.';
+    return 'Choose how often it repeats.';
+  }
+  return null;
+}
+
 // state: { reminders, nextId } as getters/setters over main.js's variables.
 // storage: { saveReminders(list), saveNextId(n) } -> { saved }
 // notifier: { reconcile(), snooze(reminder, minutes) }

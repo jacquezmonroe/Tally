@@ -5,7 +5,7 @@
 // a real iPhone does with an alert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReminderActions } from './reminderActions.js';
+import { createReminderActions, describeMissingField } from './reminderActions.js';
 import { createReminderStorage } from './storage.js';
 import { createNotifier, notificationId } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
@@ -350,4 +350,18 @@ test('delete that fails to save: the reminder is still there (and keeps its aler
   assert.equal(r.saved.saved, false);
   assert.deepEqual(t.state.reminders.map(x => x.id), [1]);
   assert.equal(t.plugin.pendingIds().length, 1);
+});
+
+// ---- Add / Save with something missing ----
+// The form used to do nothing at all (no save, no message). It now says what
+// is missing; null means everything needed is there.
+test('missing field: names exactly what is missing, first problem first', () => {
+  const ok = { name: 'Pill', time: '09:00', recurrenceType: 'daily', recurrence: { type: 'daily' } };
+  assert.equal(describeMissingField(ok), null);
+  assert.equal(describeMissingField({ ...ok, name: '   ' }), 'Give the reminder a name.');
+  assert.equal(describeMissingField({ ...ok, time: '' }), 'Pick a time.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'daysOfWeek', recurrence: null }), 'Pick at least one day.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'monthlyDate', recurrence: null }), 'Pick a day of the month from 1 to 31.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'once', recurrence: null }), 'Pick a date.');
+  assert.equal(describeMissingField({ name: '', time: '', recurrenceType: 'once', recurrence: null }), 'Give the reminder a name.');
 });
