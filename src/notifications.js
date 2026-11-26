@@ -14,8 +14,9 @@
 //   slots 1 to 7  weekly alerts: slot = weekday + 1 (Sunday 1 ... Saturday 7),
 //                 which also happens to be the plugin's own weekday number
 //   slot 8        snooze
-//   slot 9        monthly on the 29th-31st: the occurrence after the one in slot 0
-//   slots 10 to 15 reserved
+//   slots 9, 10   monthly on the 29th-31st: the next two short-month occurrences
+//                 (slot 0 is the repeating "day N" alert)
+//   slots 11 to 15 reserved
 // Every (reminder, kind of alert) pair gets its own id, so ids can never
 // collide (the old scheme gave a weekly alert id*100+weekday, which equals
 // another reminder's plain id once ids reach 100). Reminder ids are capped at
@@ -45,6 +46,7 @@ export const ALERT_TITLE = 'Tickmark';
 export const SLOT_MAIN = 0;
 export const SLOT_SNOOZE = 8;
 export const SLOT_MONTHLY_NEXT = 9;
+export const SLOT_MONTHLY_NEXT_2 = 10;
 export const SLOTS_PER_REMINDER = 16;
 export const SCHEME_VERSION = 2;
 export const SCHEME_KEY = 'tally-notification-scheme';
@@ -96,15 +98,18 @@ const parseTime = (time) => time.split(':').map(Number);
 
 // iOS can only repeat "day N of every month", which silently skips months
 // without that day. So the 29th-31st (which fall back to a short month's last
-// day, see appliesToday) get one-time alerts for their next two occurrences
-// instead; every reconcile (launch, resume, any change) moves them forward.
+// day, see appliesToday) keep that repeating alert, which never runs out even
+// if the app isn't opened, and get one-time alerts for the next two short-month
+// occurrences; every reconcile (launch, resume, any change) moves those forward.
 const isMonthEnd = (rec) => rec.type === 'monthlyDate' && rec.dayOfMonth > 28;
 
-function nextMonthEndTimes(reminder, hour, minute, now, count = 2) {
+// Four years always holds two short months, even for the 29th (only February
+// of a common year).
+function nextShortMonthTimes(reminder, hour, minute, now, count = 2) {
   const times = [];
-  for (let i = 0; i <= 93 && times.length < count; i++) {
+  for (let i = 0; i <= 4 * 366 && times.length < count; i++) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
-    if (!appliesToday(reminder, day)) continue;
+    if (day.getDate() === reminder.recurrence.dayOfMonth || !appliesToday(reminder, day)) continue;
     const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
     if (at > now) times.push(at);
   }
@@ -114,7 +119,7 @@ function nextMonthEndTimes(reminder, hour, minute, now, count = 2) {
 function scheduleFor(reminder, slot, hour, minute, now) {
   const rec = reminder.recurrence || { type: 'daily' };
   if (rec.type === 'daysOfWeek') return { on: { weekday: slot, hour, minute }, allowWhileIdle: true };
-  if (isMonthEnd(rec)) return { at: nextMonthEndTimes(reminder, hour, minute, now)[slot === SLOT_MAIN ? 0 : 1], allowWhileIdle: true };
+  if (isMonthEnd(rec) && slot !== SLOT_MAIN) return { at: nextShortMonthTimes(reminder, hour, minute, now)[slot === SLOT_MONTHLY_NEXT ? 0 : 1], allowWhileIdle: true };
   if (rec.type === 'monthlyDate') return { on: { day: rec.dayOfMonth, hour, minute }, allowWhileIdle: true };
   if (rec.type === 'once') {
     const [y, m, d] = rec.date.split('-').map(Number);
@@ -126,7 +131,7 @@ function scheduleFor(reminder, slot, hour, minute, now) {
 function slotsFor(reminder) {
   const rec = reminder.recurrence || { type: 'daily' };
   if (rec.type === 'daysOfWeek') return (rec.daysOfWeek || []).map(dow => dow + 1);
-  return isMonthEnd(rec) ? [SLOT_MAIN, SLOT_MONTHLY_NEXT] : [SLOT_MAIN];
+  return isMonthEnd(rec) ? [SLOT_MAIN, SLOT_MONTHLY_NEXT, SLOT_MONTHLY_NEXT_2] : [SLOT_MAIN];
 }
 
 // -> { items: [{ id, reminderId, slot, fingerprint, notification }], problems: [{ reminderId, reason }] }

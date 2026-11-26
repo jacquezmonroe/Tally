@@ -17,6 +17,7 @@ import {
   SLOT_MAIN,
   SLOT_SNOOZE,
   SLOT_MONTHLY_NEXT,
+  SLOT_MONTHLY_NEXT_2,
   SCHEME_KEY,
   SCHEME_VERSION,
   ALERT_BUDGET,
@@ -27,6 +28,7 @@ import { fakePlugin, fakePrefs } from './notifications.fake.js';
 
 const NOW = new Date(2026, 9, 31, 14, 0); // Sat Oct 31 2026, 2:00 PM local
 const TODAY = '2026-10-31';
+const todayKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const SETTINGS = { soundEnabled: true, quietHours: { enabled: false, start: '22:00', end: '07:00' } };
 const rem = (id, extra = {}) => ({ id, name: `Task ${id}`, time: '09:00', takenDate: null, recurrence: { type: 'daily' }, ...extra });
 const weekly = (id, days, extra = {}) => rem(id, { recurrence: { type: 'daysOfWeek', daysOfWeek: days }, ...extra });
@@ -629,38 +631,68 @@ test('one-time reminder already marked done (early) has no alert left', async ()
 });
 
 // ---- Monthly on the 29th, 30th or 31st ----
-// iOS can only repeat "day N", which skips months that have no day N. These
-// fall back to the month's last day, so they get one-time alerts for the next
-// two occurrences, refreshed on every reconcile (launch, resume, any change).
+// iOS can only repeat "day N", which skips months that have no day N. So these
+// get that repeating alert (it never runs out, even if the app isn't opened),
+// plus one-time alerts for the next two SHORT months, where the reminder falls
+// back to the last day. Every reconcile (launch, resume, any change) moves the
+// one-time alerts on.
 
-test('monthly 31st: the next two occurrences are one-time alerts, clamped to the last day of short months', () => {
+// The local days these alerts would fire on, from `from` up to `to`.
+function firingDays(items, from, to) {
+  const days = [];
+  for (let d = new Date(from); d <= to; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+    for (const { notification: { schedule } } of items) {
+      const hit = schedule.on ? schedule.on.day === d.getDate()
+        : schedule.at.getFullYear() === d.getFullYear() && schedule.at.getMonth() === d.getMonth() && schedule.at.getDate() === d.getDate();
+      if (hit) days.push(`${d.getMonth() + 1}/${d.getDate()}`);
+    }
+  }
+  return days;
+}
+
+test('monthly 31st: a repeating day-31 alert, plus one-time alerts for the next two short months', () => {
   const now = new Date(2027, 3, 10, 12, 0); // Apr 10 2027
   const items = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items;
-  assert.deepEqual(items.map(i => i.slot), [SLOT_MAIN, SLOT_MONTHLY_NEXT]);
-  const ats = items.map(i => i.notification.schedule.at);
-  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate(), d.getHours()]), [[4, 30, 9], [5, 31, 9]]);
-  assert.ok(items.every(i => !i.notification.schedule.on));
+  assert.deepEqual(items.map(i => i.slot), [SLOT_MAIN, SLOT_MONTHLY_NEXT, SLOT_MONTHLY_NEXT_2]);
+  assert.deepEqual(items[0].notification.schedule.on, { day: 31, hour: 9, minute: 0 });
+  const ats = items.slice(1).map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate(), d.getHours()]), [[4, 30, 9], [6, 30, 9]]);
 });
 
-test('monthly 31st: once today\'s time has passed, the next two start next month', () => {
+test('monthly 31st: once today\'s time has passed, the short-month alerts start after today', () => {
   const now = new Date(2027, 3, 30, 10, 0); // Apr 30 2027, after 09:00
-  const ats = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items.map(i => i.notification.schedule.at);
-  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+  const ats = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items.slice(1).map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[6, 30], [9, 30]]);
 });
 
-test('monthly 29th: Feb 28 in a common year, Feb 29 in a leap year', () => {
-  const at = (now) => desiredNotifications({ reminders: [monthly(2, 29)], settings: SETTINGS, now, random: () => 0 }).items[0].notification.schedule.at;
-  assert.deepEqual([at(new Date(2027, 1, 1)).getMonth(), at(new Date(2027, 1, 1)).getDate()], [1, 28]);
-  assert.deepEqual([at(new Date(2028, 1, 1)).getMonth(), at(new Date(2028, 1, 1)).getDate()], [1, 29]);
+test('monthly 31st: with the app never opened for a year, it still alerts in every month that has a 31st, never twice a day', () => {
+  const now = new Date(2026, 10, 26, 10, 0); // Nov 26 2026
+  const items = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items;
+  const days = firingDays(items, new Date(2026, 10, 27), new Date(2027, 11, 31));
+  assert.deepEqual(days, ['11/30', '12/31', '1/31', '2/28', '3/31', '5/31', '7/31', '8/31', '10/31', '12/31']);
 });
 
-test('monthly 31st: reconcile moves on to the next occurrences after one fires (fingerprint changes)', async () => {
+test('monthly 29th: Feb 28 in common years gets a one-time alert; a leap-year Feb 29 is the repeating alert', () => {
+  const fallbacks = (now) => desiredNotifications({ reminders: [monthly(2, 29)], settings: SETTINGS, now, random: () => 0 }).items
+    .slice(1).map(i => todayKeyOf(i.notification.schedule.at));
+  assert.deepEqual(fallbacks(new Date(2027, 1, 1)), ['2027-02-28', '2029-02-28']);
+  assert.deepEqual(fallbacks(new Date(2028, 1, 1)), ['2029-02-28', '2030-02-28']);
+  const items = desiredNotifications({ reminders: [monthly(2, 29)], settings: SETTINGS, now: new Date(2028, 1, 1), random: () => 0 }).items;
+  assert.deepEqual(firingDays(items, new Date(2028, 1, 1), new Date(2028, 2, 31)), ['2/29', '3/29']);
+});
+
+test('monthly 30th: only February falls back', () => {
+  const items = desiredNotifications({ reminders: [monthly(2, 30)], settings: SETTINGS, now: new Date(2026, 10, 26, 10, 0), random: () => 0 }).items;
+  assert.deepEqual(items.slice(1).map(i => todayKeyOf(i.notification.schedule.at)), ['2027-02-28', '2028-02-29']);
+});
+
+test('monthly 31st: reconcile moves on to the next short months after one fires (fingerprint changes)', async () => {
   const plugin = fakePlugin();
   await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 3, 10), random: () => 0 });
   const r = await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 4, 1), random: () => 0 });
   assert.deepEqual(r.scheduled, [2]);
-  const ats = plugin.pendingIds().map(id => new Date(plugin.pending.get(String(id)).schedule.at));
-  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+  const ats = plugin.pendingIds().map(id => plugin.pending.get(String(id)).schedule.at).filter(Boolean).map(a => new Date(a));
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[6, 30], [9, 30]]);
 });
 
 test('monthly 28th and below still use one repeating alert', () => {
