@@ -29,6 +29,10 @@ export function alertBannerText(summary) {
     return 'Notifications are off for Tickmark, so your reminders will not alert you. Turn them on in Settings → Notifications → Tickmark.';
   }
   if (summary.kind === 'failed') {
+    const overLimit = [...summary.badges.values()].filter(r => r === 'over_limit').length;
+    if (overLimit > 0) {
+      return `iPhone allows only 64 scheduled alerts per app, so ${overLimit === 1 ? '1 reminder has' : `${overLimit} reminders have`} no alert. Delete some reminders or use fewer days to make room.`;
+    }
     if (summary.count > 0) {
       return summary.count === 1
         ? '1 reminder is saved but its alert could not be scheduled.'
@@ -40,5 +44,7 @@ export function alertBannerText(summary) {
 }
 
 export function alertBadgeText(reason) {
-  return reason === 'permission_denied' ? 'Alerts are off' : 'Alert not scheduled';
+  if (reason === 'permission_denied') return 'Alerts are off';
+  if (reason === 'over_limit') return 'Over iPhone alert limit';
+  return 'Alert not scheduled';
 }

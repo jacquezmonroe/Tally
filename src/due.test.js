@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, countBadge } from './due.js';
+import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, countBadge, msUntilNextLocalMidnight } from './due.js';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { todayKey } from './streak.js';
@@ -344,4 +344,73 @@ test('isFinished: recurring is done for today only, one-time is done for good', 
 test('dateFromKey gives local midnight', () => {
   const d = dateFromKey('2024-03-09');
   assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()], [2024, 2, 9, 0]);
+});
+
+// ---- Monthly on the 29th, 30th or 31st falls back to the month's last day ----
+test('monthly 31st applies on the last day of short months, and only then', () => {
+  const r = makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: 31 } });
+  assert.equal(appliesToday(r, new Date(2027, 3, 30)), true);   // Apr 30
+  assert.equal(appliesToday(r, new Date(2027, 3, 29)), false);
+  assert.equal(appliesToday(r, new Date(2027, 1, 28)), true);   // Feb 28, common year
+  assert.equal(appliesToday(r, new Date(2028, 1, 29)), true);   // Feb 29, leap year
+  assert.equal(appliesToday(r, new Date(2028, 1, 28)), false);
+  assert.equal(appliesToday(r, new Date(2027, 4, 31)), true);   // May 31
+  assert.equal(appliesToday(r, new Date(2027, 4, 30)), false);
+});
+
+test('monthly 29th and 30th in February', () => {
+  const on = day => makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: day } });
+  assert.equal(appliesToday(on(29), new Date(2027, 1, 28)), true);
+  assert.equal(appliesToday(on(29), new Date(2028, 1, 29)), true);
+  assert.equal(appliesToday(on(29), new Date(2028, 1, 28)), false);
+  assert.equal(appliesToday(on(30), new Date(2027, 1, 28)), true);
+  assert.equal(appliesToday(on(30), new Date(2027, 3, 30)), true);
+});
+
+test('monthly 31st occurs in all 12 months', () => {
+  const r = makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: 31 } });
+  const months = new Set();
+  let cursor = new Date(2026, 11, 31);
+  for (let i = 0; i < 12; i++) { cursor = nextOccurrence(r, cursor); months.add(cursor.getMonth()); }
+  assert.equal(months.size, 12);
+});
+
+// ---- When the next day starts (for refreshing an app left open) ----
+
+test('msUntilNextLocalMidnight: ordinary evening', () => {
+  assert.equal(msUntilNextLocalMidnight(new Date(2026, 10, 25, 23, 0, 0)), 3600000);
+  assert.equal(msUntilNextLocalMidnight(new Date(2026, 10, 25, 0, 0, 0)), 24 * 3600000);
+});
+
+test('msUntilNextLocalMidnight: lands exactly on local midnight across both US DST changes', () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    for (const start of [new Date(2027, 2, 14, 0, 30), new Date(2026, 10, 1, 0, 30), new Date(2027, 2, 13, 22, 0)]) {
+      const next = new Date(start.getTime() + msUntilNextLocalMidnight(start));
+      assert.deepEqual([next.getHours(), next.getMinutes()], [0, 0]);
+      assert.equal(next.getDate(), new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getDate());
+    }
+  } finally {
+    if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+  }
+});
+
+// ---- Overdue uses the same clock time the alert uses ----
+// On a spring-forward day 2:30 AM doesn't exist; JavaScript (and so the alert)
+// moves it to 3:30 AM. "Overdue" must not appear before the alert can fire.
+test('isOverdue: a 2:30 AM one-time reminder on spring-forward day is not overdue at 3:00, but is at 3:30', () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    const r = makeReminder({ time: '02:30', recurrence: { type: 'once', date: '2027-03-14' } });
+    assert.equal(isOverdue(r, new Date(2027, 2, 14, 3, 0)), false);
+    assert.equal(isOverdue(r, new Date(2027, 2, 14, 3, 30)), true);
+    // An ordinary day is unchanged: overdue from the scheduled minute on.
+    const d = makeReminder({ time: '09:00' });
+    assert.equal(isOverdue(d, new Date(2027, 2, 15, 8, 59)), false);
+    assert.equal(isOverdue(d, new Date(2027, 2, 15, 9, 0)), true);
+  } finally {
+    if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+  }
 });

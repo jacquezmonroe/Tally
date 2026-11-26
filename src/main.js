@@ -1,10 +1,10 @@
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Preferences } from '@capacitor/preferences';
 import { Badge } from '@capawesome/capacitor-badge';
-import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
+import { checkStaleStreaks, isOnGrace, isStreakEligible, todayKey, takeToday, untakeToday } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
 import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
-import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
+import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, msUntilNextLocalMidnight } from './due.js';
 import {
   ringProgress,
   ringDashOffset,
@@ -35,6 +35,7 @@ import {
   getReminderColorDarkHex,
   graceOccurrencesForHours,
   DEFAULT_QUIET_HOURS,
+  rootFontSizeForSystemBody,
 } from './settings.js';
 import { intelligence } from './intelligence/default.js';
 import { applyAnswer, reminderCount, numberedNames, timeValue } from './intelligence/understand.js';
@@ -65,10 +66,10 @@ import {
   discardReviewItem,
   approvedSteps,
 } from './subtasks.js';
-import { classifyNotificationAction } from './notificationActions.js';
+import { classifyNotificationAction, resolveMarkTaken, creditPastDay } from './notificationActions.js';
 import { createReminderStorage, parseQuietHours, parseReminderDefaults, describeNotice } from './storage.js';
 import { createNotifier, SNOOZE_MINUTES } from './notifications.js';
-import { createReminderActions } from './reminderActions.js';
+import { createReminderActions, describeMissingField } from './reminderActions.js';
 import { summarizeAlerts, alertBannerText, alertBadgeText } from './alertStatus.js';
 import './style.css';
 import './alerts.css';
@@ -91,6 +92,7 @@ const prefsAdapter = {
   async get(key) { const { value } = await Preferences.get({ key }); return value; },
   set: (key, value) => Preferences.set({ key, value }),
   remove: (key) => Preferences.remove({ key }),
+  async keys() { return (await Preferences.keys()).keys; },
 };
 const storage = createReminderStorage({
   prefs: prefsAdapter,
@@ -192,6 +194,8 @@ const focusListEl = document.getElementById('focusList');
 const recoveryBanner = document.getElementById('recoveryBanner');
 const recoveryBannerText = document.getElementById('recoveryBannerText');
 const recoveryDismissBtn = document.getElementById('recoveryDismissBtn');
+const recoveryExportEl = document.getElementById('recoveryExport');
+const recoveryCopyBtn = document.getElementById('recoveryCopyBtn');
 const nlInput = document.getElementById('nlInput');
 const nlFillBtn = document.getElementById('nlFillBtn');
 const understandPanel = document.getElementById('understandPanel');
@@ -502,10 +506,31 @@ async function refreshRecoveryNotice() {
   const text = describeNotice(notice);
   recoveryBannerText.textContent = text;
   recoveryBanner.hidden = !text;
+  recoveryExportEl.hidden = !(await storage.collectRecoveryData());
 }
 
+// Settings → Privacy: copies everything set aside during a recovery.
+recoveryCopyBtn.addEventListener('click', async () => {
+  const data = await storage.collectRecoveryData();
+  if (!data) { recoveryExportEl.hidden = true; return; }
+  try {
+    await navigator.clipboard.writeText(data.text);
+    showToast('Copied. Paste it into Notes or an email to keep it.');
+  } catch {
+    showToast("Couldn't copy. Try again.");
+  }
+});
+
 async function saveReminders() {
-  await storage.saveReminders(reminders);
+  return storage.saveReminders(reminders);
+}
+
+// Checking off and un-marking: if it didn't reach storage, say so rather than
+// show a checkmark that will be gone after a relaunch.
+async function saveCheckOff() {
+  const saved = await saveReminders();
+  if (!saved.saved) showToast("Couldn't save that change. Check your storage and try again.");
+  return saved;
 }
 
 // ---- Personalization ----
@@ -921,18 +946,23 @@ async function highlightFromNotification(reminderId) {
   setTimeout(() => target.classList.remove('notif-highlight'), NOTIF_HIGHLIGHT_MS);
 }
 
-// "Mark Taken" pressed on a notification. Uses completeReminder(), the very
-// function the in-app check-off uses, so the streak and grace-period rules are
-// not repeated here. It never un-takes: an already-done reminder (a double
-// press, or a late duplicate) is left alone, and so is one that is not due
-// today, which the app itself would not let you check off either.
-async function markTakenFromNotification(reminderId) {
+// "Mark Taken" pressed on a notification. It never un-takes: an already-done
+// reminder (a double press, or a late duplicate) is left alone. iOS may hand
+// the press over late (e.g. the next morning), so resolveMarkTaken decides
+// which day it counts for: today goes through completeReminder(), the very
+// function the in-app check-off uses; an earlier day is credited to that day
+// only, so today's dose is never marked taken by yesterday's press.
+async function markTakenFromNotification(reminderId, snoozeDay = null, alertTime = null) {
   await appReady;
-  const reminder = reminders.find(r => r.id === reminderId);
-  // A one-time reminder from an earlier day can still be marked taken (it is
-  // listed under Overdue); a recurring one only on a day it applies.
-  if (!reminder || !(appliesToday(reminder) || isOverdueOneTime(reminder)) || isFinished(reminder)) return;
-  await completeReminder(reminderId);
+  const decision = resolveMarkTaken(reminders.find(r => r.id === reminderId), new Date(), { snoozeDay, alertTime });
+  if (decision.kind === 'complete_today') {
+    await completeReminder(reminderId);
+  } else if (decision.kind === 'credit_past') {
+    const idx = reminders.findIndex(r => r.id === reminderId);
+    reminders[idx] = creditPastDay(reminders[idx], decision.day, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+    await saveCheckOff();
+    render();
+  }
 }
 
 // Tapping a delivered notification opens the app (default Capacitor
@@ -941,7 +971,7 @@ async function markTakenFromNotification(reminderId) {
 // Pressing its "Mark Taken" button marks it done instead (see above).
 LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
   const route = classifyNotificationAction(action);
-  if (route.kind === 'mark_taken') markTakenFromNotification(route.reminderId);
+  if (route.kind === 'mark_taken') markTakenFromNotification(route.reminderId, route.snoozeDay, route.alertTime);
   else if (route.kind === 'open') highlightFromNotification(route.reminderId);
 }).catch(() => {
   // Not running in the native shell (plain browser preview).
@@ -972,11 +1002,13 @@ async function addReminder(name, time, recurrence, color, notes, subtasks = [], 
   const outcome = await actions.add({ name, time, recurrence, color, notes, subtasks, importance });
   if (outcome.error === 'ids_exhausted') {
     showToast("Can't add more reminders: the app has run out of reminder numbers.");
-    return;
+    return false;
   }
   reportOutcome(outcome);
+  if (!outcome.saved.saved) return false; // not added: keep the form so nothing typed is lost
   // Show the tab the new reminder lives on, so it doesn't seem to vanish.
   setView(appliesToday(outcome.reminder) ? 'today' : 'upcoming');
+  return true;
 }
 
 // The in-app check-off: tapping the circle, swiping, and "Mark complete" all
@@ -988,8 +1020,9 @@ async function toggleTaken(id) {
     await completeReminder(id);
     return;
   }
-  reminder.takenDate = null;
-  await saveReminders();
+  reminders[reminders.indexOf(reminder)] = untakeToday(reminder, todayKey()); // gives back the streak credit too
+  await saveCheckOff();
+  syncAlerts(); // an un-marked one-time reminder needs its alert back
   render();
 }
 
@@ -1004,8 +1037,7 @@ async function completeReminder(id) {
   const today = todayKey();
   const previousStreak = reminder.currentStreak;
   justTakenId = id;
-  reminder.takenDate = today;
-  reminders[idx] = markReminderTaken(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+  reminders[idx] = takeToday(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
   const newStreak = reminders[idx].currentStreak;
   if (newStreak > previousStreak) {
     justIncrementedStreakId = id; // real increment this session — the ring pops
@@ -1015,7 +1047,7 @@ async function completeReminder(id) {
       showToast(getStreakAcknowledgment(newStreak, userName));
     }
   }
-  await saveReminders();
+  await saveCheckOff();
   syncAlerts(); // done now, so a pending snooze is dropped and shouldn't ping later
   render();
   justTakenId = null;
@@ -1027,6 +1059,12 @@ async function completeReminder(id) {
 
 const COMPLETE_LINGER_MS = 1400;
 
+// The ✕ on a row deletes with a single tap, so it asks first (swipe-then-tap
+// Delete is already two deliberate steps). Deleting also stops the alerts.
+function confirmDelete(reminder) {
+  return window.confirm(`Delete "${reminder.name}"? Its alerts will stop.`);
+}
+
 async function deleteReminder(id) {
   if (openSwipeId === id) openSwipeId = null;
   reportOutcome(await actions.remove(id));
@@ -1035,10 +1073,12 @@ async function deleteReminder(id) {
 
 async function updateReminder(id, name, time, recurrence, color, notes, importance = 'normal') {
   const outcome = await actions.update(id, { name, time, recurrence, color, notes, importance });
-  if (outcome.error) return;
+  if (outcome.error) return false;
   reportOutcome(outcome);
+  if (!outcome.saved.saved) return false; // not changed: keep the form so the edit isn't lost
   editingId = null;
   render();
+  return true;
 }
 
 // ---- Streak ring + swipe-to-delete ----
@@ -1261,16 +1301,16 @@ function buildPastRow(reminder, kind) {
   item.className = 'reminder-item past-row' + (finished ? ' taken' : '');
   item.dataset.reminderId = reminder.id;
   item.innerHTML = `
-    <button class="check-btn" aria-label="${finished ? 'Mark not taken' : 'Mark taken'}">${finished ? checkSvg(false) : ''}</button>
+    <button class="check-btn" aria-label="${finished ? 'Mark not taken' : 'Mark taken'}: ${escapeAttr(reminder.name)}">${finished ? checkSvg(false) : ''}</button>
     <div class="reminder-info">
       <span class="reminder-name">${escapeHtml(reminder.name)}</span>
       <span class="reminder-time">${dayLabel}</span>
     </div>
-    <button class="delete-btn" aria-label="Delete">✕</button>
+    <button class="delete-btn" aria-label="Delete ${escapeAttr(reminder.name)}">✕</button>
   `;
   item.querySelector('.check-btn').addEventListener('click', () => toggleTaken(reminder.id));
   item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
-  item.querySelector('.delete-btn').addEventListener('click', () => deleteReminder(reminder.id));
+  item.querySelector('.delete-btn').addEventListener('click', () => { if (confirmDelete(reminder)) deleteReminder(reminder.id); });
   return item;
 }
 
@@ -1359,7 +1399,7 @@ function render({ animateEntrance = false } = {}) {
     // calendar mark stands in for the checkbox and the label leads with the day.
     const leading = upcoming
       ? '<span class="upcoming-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/></svg></span>'
-      : `<button class="check-btn" aria-label="${taken ? 'Mark not taken' : 'Mark taken'}">${taken ? checkSvg(justTakenId === reminder.id) : ''}</button>`;
+      : `<button class="check-btn" aria-label="${taken ? 'Mark not taken' : 'Mark taken'}: ${escapeAttr(reminder.name)}">${taken ? checkSvg(justTakenId === reminder.id) : ''}</button>`;
     const timeLabel = upcoming
       ? `${describeDay(nextOccurrence(reminder))} · ${formatTime(reminder.time)}`
       : `${formatTime(reminder.time)}${recurrenceLabel ? ` · ${recurrenceLabel}` : ''}`;
@@ -1371,7 +1411,7 @@ function render({ animateEntrance = false } = {}) {
         ${alertBadges.has(reminder.id) ? `<span class="alert-badge">${alertBadgeText(alertBadges.get(reminder.id))}</span>` : ''}
       </div>
       ${streakRing}
-      <button class="delete-btn" aria-label="Delete">✕</button>
+      <button class="delete-btn" aria-label="Delete ${escapeAttr(reminder.name)}">✕</button>
     `;
     item.querySelector('.check-btn')?.addEventListener('click', () => toggleTaken(reminder.id));
     item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
@@ -1384,12 +1424,12 @@ function render({ animateEntrance = false } = {}) {
     row.dataset.reminderId = reminder.id;
     const cannotComplete = taken || upcoming;
     row.innerHTML = (cannotComplete ? '' : `<div class="swipe-complete" aria-hidden="true">${completeSvg()}</div>`)
-      + '<button type="button" class="swipe-action" aria-label="Delete reminder">Delete</button>';
+      + `<button type="button" class="swipe-action" aria-label="Delete ${escapeAttr(reminder.name)}">Delete</button>`;
     row.appendChild(item);
     if (openSwipeId === reminder.id) item.style.transform = `translateX(-${SWIPE_ACTION_WIDTH}px)`;
     wireSwipe(row, item, reminder.id, cannotComplete);
     row.querySelector('.swipe-action').addEventListener('click', () => removeWithAnimation(row, reminder.id));
-    item.querySelector('.delete-btn').addEventListener('click', () => removeWithAnimation(row, reminder.id));
+    item.querySelector('.delete-btn').addEventListener('click', () => { if (confirmDelete(reminder)) removeWithAnimation(row, reminder.id); });
     node = row;
 
     if (animateEntrance) {
@@ -1435,22 +1475,26 @@ addForm.addEventListener('submit', async (e) => {
   const name = nameInput.value.trim();
   const time = timeInput.value;
   const recurrence = readRecurrenceFromForm(addForm);
-  if (!name || !time || !recurrence) return;
+  const missing = describeMissingField({ name, time, recurrenceType: addForm.querySelector('.recurrence-select').value, recurrence });
+  if (missing) { showToast(missing); return; }
   const color = readColorFromContainer(colorFieldsEl);
   const notes = notesInput.value.trim();
   const importance = importanceInput.value;
   // "Add three job applications..." was confirmed as separate reminders or as
   // one reminder with steps; everything else is a single reminder.
+  let added = true;
   if (understanding && understanding.count > 1 && understanding.countMode === 'steps') {
-    await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)), importance);
+    added = await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)), importance);
   } else if (understanding && reminderCount(understanding) > 1) {
     for (const numbered of numberedNames(name, understanding.count)) {
-      await addReminder(numbered, time, recurrence, color, notes, [], importance);
+      added = await addReminder(numbered, time, recurrence, color, notes, [], importance);
+      if (!added) break;
     }
   } else {
-    await addReminder(name, time, recurrence, color, notes, [], importance);
+    added = await addReminder(name, time, recurrence, color, notes, [], importance);
   }
-  closeScreen(addScreen);
+  if (added) closeScreen(addScreen);
+  else render(); // the list shows only what was really saved
 });
 
 // ---- Describe it (Understand Reminder) ----
@@ -1620,6 +1664,8 @@ detailSnoozeBtn.addEventListener('click', async () => {
     showToast(`Snoozed for ${SNOOZE_MINUTES} minutes`);
   } else if (result.reason === 'permission_denied') {
     showToast('Notifications are off for Tickmark. Turn them on in Settings.');
+  } else if (result.reason === 'over_limit') {
+    showToast("Couldn't snooze: too many snoozes are already waiting. Try again in a few minutes.");
   } else {
     showToast("Couldn't snooze — check that notifications are allowed");
   }
@@ -1834,8 +1880,10 @@ editForm.addEventListener('submit', async (e) => {
   const name = editNameInput.value.trim();
   const time = editTimeInput.value;
   const recurrence = readRecurrenceFromForm(editForm);
-  if (!name || !time || !recurrence || editingId === null) return;
-  await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value);
+  if (editingId === null) return;
+  const missing = describeMissingField({ name, time, recurrenceType: editForm.querySelector('.recurrence-select').value, recurrence });
+  if (missing) { showToast(missing); return; }
+  if (!(await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value))) return;
   if (detailId !== null) renderDetail(); // refresh it before Back reveals it
   closeEdit();
 });
@@ -2168,8 +2216,50 @@ planDiscardBtn.addEventListener('click', async () => {
   showToast('Saved plan discarded');
 });
 
+// ---- A new day while the app is open or in the background ----
+// Launch runs the stale-streak check; a new day that starts while the app is
+// open (midnight) or suspended (resume) needs the same, or the streak count,
+// Today list, Overdue and badge stay on yesterday until a relaunch.
+let currentDay = null;
+let midnightTimer = null;
+
+async function refreshForNewDay() {
+  const today = todayKey();
+  if (currentDay === null || today === currentDay) return;
+  currentDay = today;
+  reminders = checkStaleStreaks(reminders, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+  await saveReminders();
+  render();
+  updateBadge();
+}
+
+// Timers don't run while iOS has the app suspended; resume covers that case.
+function armMidnightTimer() {
+  clearTimeout(midnightTimer);
+  midnightTimer = setTimeout(async () => {
+    await refreshForNewDay();
+    syncAlerts();
+    armMidnightTimer();
+  }, msUntilNextLocalMidnight() + 1000);
+}
+
+// ---- Text size (Dynamic Type) ----
+// Only iOS's WebKit knows the system text styles; elsewhere (a desktop
+// browser preview) the designed 16px root is left alone.
+function applyTextSize() {
+  if (!(window.CSS && CSS.supports && CSS.supports('font', '-apple-system-body'))) return;
+  const probe = document.createElement('span');
+  probe.style.cssText = 'font: -apple-system-body; position: absolute; visibility: hidden;';
+  probe.textContent = 'x';
+  document.body.appendChild(probe);
+  const bodyPx = parseFloat(getComputedStyle(probe).fontSize);
+  probe.remove();
+  document.documentElement.style.fontSize = `${rootFontSizeForSystemBody(bodyPx)}px`;
+}
+
 // ---- Init ----
 async function init() {
+  applyTextSize();
   // Theme is applied first, before anything renders, to avoid a flash of
   // the default color. This is fully reliable in the web preview (see the
   // inline bootstrap script in index.html's <head>, which reads localStorage
@@ -2191,6 +2281,7 @@ async function init() {
   const graceOccurrences = graceOccurrencesForHours(reminderDefaults.gracePeriodHours);
   const previousStreaks = new Map(reminders.map(r => [r.id, r.currentStreak]));
   reminders = checkStaleStreaks(reminders, todayKey(), graceOccurrences);
+  currentDay = todayKey();
   // One toast for the launch, even if several reminders' streaks broke while
   // the app was closed — this is meant to be a gentle nudge, not a list.
   const anyStreakReset = reminders.some(r => previousStreaks.get(r.id) > 0 && r.currentStreak === 0);
@@ -2206,6 +2297,7 @@ async function init() {
   // after that only fixes whatever differs.
   await notifier.migrate();
   await syncAlerts();
+  armMidnightTimer();
   micBtn.hidden = !(await isVoiceAvailable());
 
   const { value: onboarded } = await Preferences.get({ key: ONBOARDED_KEY });
@@ -2224,9 +2316,14 @@ document.addEventListener('visibilitychange', () => {
     // A notification may have set the badge natively while we were away, so
     // forget what we last set and re-sync instead of trusting it.
     lastBadgeCount = null;
+    applyTextSize(); // the text size may have been changed in iOS Settings meanwhile
     render();
     // The user may have changed the notification permission in iOS Settings.
-    appReady.then(() => syncAlerts());
+    appReady.then(async () => {
+      await refreshForNewDay();
+      armMidnightTimer(); // re-aimed, since it may have been paused while suspended
+      syncAlerts();
+    });
   }
 });
 

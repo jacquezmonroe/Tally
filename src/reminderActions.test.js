@@ -5,11 +5,12 @@
 // a real iPhone does with an alert.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReminderActions } from './reminderActions.js';
+import { createReminderActions, describeMissingField } from './reminderActions.js';
 import { createReminderStorage } from './storage.js';
 import { createNotifier, notificationId } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
 import { fakePlugin, fakePrefs } from './notifications.fake.js';
+import { isUpcoming, isPendingToday } from './due.js';
 
 const KEYS = { reminders: 'tally-reminders', nextId: 'tally-next-id' };
 const NOW = new Date(2026, 9, 31, 14, 0);
@@ -272,4 +273,95 @@ test('lifecycle: add, edit, fail, retry, delete: the phone and the saved data al
   await t.actions.remove(b.reminder.id);
   assert.deepEqual(t.plugin.pendingIds(), [notificationId(1, 5), notificationId(1, 6)]);
   assert.deepEqual(t.stored().map(r => r.name), ['Take vitamins']);
+});
+
+// ---- Editing into a one-time reminder ----
+// A one-time reminder counts as finished once it has any takenDate, so a
+// takenDate carried over from its old schedule must not make it look done.
+
+test('update: a reminder taken today, changed to a one-time reminder on a later day, is upcoming and alerts', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today, currentStreak: 3, longestStreak: 3, lastCompletedDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: '2026-11-05' } }));
+  assert.equal(r.reminder.takenDate, null);
+  assert.ok(isUpcoming(r.reminder, NOW));
+  assert.ok(isPendingToday(r.reminder, new Date(2026, 10, 5, 8, 0)));
+  assert.equal(t.plugin.pendingIds().length, 1);
+});
+
+test('update: a reminder taken today, changed to a one-time reminder for today, stays done (no second dose)', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: today } }));
+  assert.equal(r.reminder.takenDate, today);
+});
+
+test('update: editing a recurring reminder taken today keeps it taken today', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, weeklyFields([6], { time: '10:00' }));
+  assert.equal(r.reminder.takenDate, today);
+});
+
+test('update: moving a completed one-time reminder to a new later date makes it pending again', async () => {
+  const t = setup({ reminders: [{ id: 1, ...fields({ recurrence: { type: 'once', date: '2026-10-30' } }), takenDate: '2026-10-30' }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: '2026-11-02' } }));
+  assert.equal(r.reminder.takenDate, null);
+});
+
+// ---- A change that couldn't be saved is undone in memory ----
+// Otherwise the next, unrelated save quietly saves (and schedules) the change
+// the user was told had failed.
+function failingSetup(options) {
+  let fail = false;
+  const t = setup({ ...options, failSetKey: key => fail && key === KEYS.reminders });
+  return { ...t, failNext: (v = true) => { fail = v; } };
+}
+
+test('add that fails to save: not kept in memory, and not saved by the next change', async () => {
+  const t = failingSetup({ reminders: [{ id: 1, ...fields({ name: 'Existing' }) }], nextId: 2 });
+  t.failNext();
+  const r = await t.actions.add(fields({ name: 'Failed one' }));
+  assert.equal(r.saved.saved, false);
+  assert.deepEqual(t.state.reminders.map(x => x.name), ['Existing']);
+  assert.equal(t.state.nextId, 2);
+  t.failNext(false);
+  await t.actions.update(1, fields({ name: 'Existing', time: '10:00' }));
+  assert.deepEqual(t.stored().map(x => x.name), ['Existing']);
+  assert.equal(t.plugin.pendingIds().length, 1);
+});
+
+test('edit that fails to save: the reminder goes back to how it was', async () => {
+  const t = failingSetup({ reminders: [{ id: 1, ...fields(), takenDate: null }], nextId: 2 });
+  t.failNext();
+  const r = await t.actions.update(1, fields({ name: 'Changed', time: '21:00', recurrence: { type: 'once', date: '2026-11-05' } }));
+  assert.equal(r.saved.saved, false);
+  assert.deepEqual([t.state.reminders[0].name, t.state.reminders[0].time, t.state.reminders[0].recurrence.type], ['Take vitamins', '09:00', 'daily']);
+  t.failNext(false);
+  await t.actions.syncAlerts();
+  assert.equal(t.plugin.pending.get(String(notificationId(1, 0))).schedule.on.hour, 9);
+});
+
+test('delete that fails to save: the reminder is still there (and keeps its alert)', async () => {
+  const t = failingSetup({ reminders: [{ id: 1, ...fields() }], nextId: 2 });
+  await t.actions.syncAlerts();
+  t.failNext();
+  const r = await t.actions.remove(1);
+  assert.equal(r.saved.saved, false);
+  assert.deepEqual(t.state.reminders.map(x => x.id), [1]);
+  assert.equal(t.plugin.pendingIds().length, 1);
+});
+
+// ---- Add / Save with something missing ----
+// The form used to do nothing at all (no save, no message). It now says what
+// is missing; null means everything needed is there.
+test('missing field: names exactly what is missing, first problem first', () => {
+  const ok = { name: 'Pill', time: '09:00', recurrenceType: 'daily', recurrence: { type: 'daily' } };
+  assert.equal(describeMissingField(ok), null);
+  assert.equal(describeMissingField({ ...ok, name: '   ' }), 'Give the reminder a name.');
+  assert.equal(describeMissingField({ ...ok, time: '' }), 'Pick a time.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'daysOfWeek', recurrence: null }), 'Pick at least one day.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'monthlyDate', recurrence: null }), 'Pick a day of the month from 1 to 31.');
+  assert.equal(describeMissingField({ ...ok, recurrenceType: 'once', recurrence: null }), 'Pick a date.');
+  assert.equal(describeMissingField({ name: '', time: '', recurrenceType: 'once', recurrence: null }), 'Give the reminder a name.');
 });

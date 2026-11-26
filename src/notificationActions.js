@@ -9,6 +9,9 @@
 // the reminder id). classifyNotificationAction turns that event into one of
 // three decisions.
 
+import { appliesToday, isOverdueOneTime, isFinished } from './due.js';
+import { todayKey, markReminderTaken } from './streak.js';
+
 export const REMINDER_ACTION_TYPE_ID = 'REMINDER';
 export const MARK_TAKEN_ACTION_ID = 'MARK_TAKEN';
 
@@ -34,7 +37,73 @@ function reminderIdOf(action) {
 export function classifyNotificationAction(action) {
   const reminderId = reminderIdOf(action);
   if (reminderId === null) return { kind: 'ignore', reminderId: null };
-  if (action.actionId === MARK_TAKEN_ACTION_ID) return { kind: 'mark_taken', reminderId };
+  if (action.actionId === MARK_TAKEN_ACTION_ID) {
+    // A snooze alert records the day it belongs to (see buildSnooze).
+    const extra = action.notification.extra;
+    const snoozeDay = extra.fp === 'snooze' && typeof extra.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(extra.day) ? extra.day : null;
+    if (snoozeDay) return { kind: 'mark_taken', reminderId, snoozeDay };
+    // Any other alert records the time it was scheduled for (see desiredNotifications).
+    const alertTime = typeof extra.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(extra.time) ? extra.time : null;
+    return alertTime ? { kind: 'mark_taken', reminderId, alertTime } : { kind: 'mark_taken', reminderId };
+  }
   if (action.actionId === 'tap') return { kind: 'open', reminderId };
   return { kind: 'ignore', reminderId };
+}
+
+// ---- Which day a "Mark Taken" press counts for ----
+// iOS can hand the press to the app later than it happened (it is held until
+// the app's JavaScript runs, possibly the next morning). So the press counts
+// for the day of the reminder's latest scheduled time at or before `now`, not
+// simply "today": a press for Monday's alert handled on Tuesday before
+// Tuesday's time must never mark Tuesday's dose as taken.
+// Known limit: if it is handled after the NEXT alert has also fired, the two
+// can't be told apart (the plugin doesn't pass the delivery date), and the
+// newer one is credited.
+
+const minutesOf = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+
+// Day key of the latest scheduled time at or before `now`, or null.
+function latestOccurrenceKey(reminder, now) {
+  if (appliesToday(reminder, now) && minutesOf(reminder.time) <= now.getHours() * 60 + now.getMinutes()) return todayKey(now);
+  for (let i = 1; i <= 366; i++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    if (appliesToday(reminder, day)) return todayKey(day);
+  }
+  return null;
+}
+
+// A press on a snooze alert passes the snooze's own day (snoozeDay): a snooze
+// can fire before the reminder's time, when "the latest scheduled time" would
+// still be yesterday. A snoozeDay after today is not trusted.
+// Any other alert passes the time it was scheduled for (alertTime), which is
+// used instead of the reminder's time: the reminder may have been edited
+// since the alert fired.
+// -> { kind: 'ignore' } | { kind: 'complete_today' } | { kind: 'credit_past', day }
+export function resolveMarkTaken(reminder, now = new Date(), { snoozeDay = null, alertTime = null } = {}) {
+  if (!reminder) return { kind: 'ignore' };
+  if (reminder.recurrence && reminder.recurrence.type === 'once') {
+    return (appliesToday(reminder, now) || isOverdueOneTime(reminder, now)) && !isFinished(reminder, now)
+      ? { kind: 'complete_today' } : { kind: 'ignore' };
+  }
+  const day = snoozeDay && snoozeDay <= todayKey(now) ? snoozeDay
+    : latestOccurrenceKey(alertTime ? { ...reminder, time: alertTime } : reminder, now);
+  if (day === null) return { kind: 'ignore' };
+  if (day === todayKey(now)) return isFinished(reminder, now) ? { kind: 'ignore' } : { kind: 'complete_today' };
+  const alreadyCounted = (reminder.takenDate && reminder.takenDate >= day) || (reminder.lastCompletedDate && reminder.lastCompletedDate >= day);
+  return alreadyCounted ? { kind: 'ignore' } : { kind: 'credit_past', day };
+}
+
+// Records a press for an earlier day: the streak counts that day, and
+// takenDate moves to it only if nothing later is already recorded.
+// If the launch stale-streak check zeroed the streak because this very day
+// looked missed, the count from before that reset is used again, so the
+// streak continues instead of restarting at 1.
+export function creditPastDay(reminder, day, graceOccurrences) {
+  const { streakBeforeReset: before, ...rest } = reminder;
+  const usable = before && typeof before === 'object' && rest.currentStreak === 0
+    && before.lastCompletedDate === rest.lastCompletedDate && Number.isSafeInteger(before.currentStreak) && before.currentStreak > 0;
+  const start = usable ? { ...rest, currentStreak: before.currentStreak } : reminder;
+  let updated = markReminderTaken(start, day, graceOccurrences);
+  if (updated === start) updated = reminder; // nothing credited: leave the streak as it was
+  return { ...updated, takenDate: reminder.takenDate && reminder.takenDate > day ? reminder.takenDate : day };
 }

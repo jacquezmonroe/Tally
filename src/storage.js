@@ -19,6 +19,7 @@
 import {
   normalizeReminderColor,
   GRACE_PERIOD_OPTIONS,
+  LEGACY_GRACE_HOURS_AS_NONE,
   DEFAULT_QUIET_HOURS,
   DEFAULT_REMINDER_DEFAULTS,
 } from './settings.js';
@@ -257,6 +258,7 @@ export function parseReminderDefaults(raw) {
   let reset = false;
   const p = parsed.value;
   if (GRACE_PERIOD_OPTIONS.includes(p.gracePeriodHours)) value.gracePeriodHours = p.gracePeriodHours;
+  else if (p.gracePeriodHours === LEGACY_GRACE_HOURS_AS_NONE) value.gracePeriodHours = 0; // same behavior, no reset notice
   else if ('gracePeriodHours' in p) reset = true;
   if (typeof p.soundEnabled === 'boolean') value.soundEnabled = p.soundEnabled;
   else if ('soundEnabled' in p) reset = true;
@@ -279,11 +281,17 @@ export function describeNotice(notice) {
     const aside = notice.quarantined ? ` and set aside ${notice.quarantined} that couldn't be read` : '';
     parts.push(`${kept}${aside}. Your original data was saved first.`);
   }
+  if (notice.unreadable || notice.quarantined) {
+    parts.push('You can copy it to keep it safe in Settings → Privacy.');
+  }
   if (Array.isArray(notice.settingsReset) && notice.settingsReset.length) {
     parts.push('A saved setting was invalid and was reset to its default.');
   }
   return parts.join(' ');
 }
+
+// Keys that hold data set aside or backed up during a recovery.
+const RECOVERY_KEY_PREFIXES = [BACKUP_KEY_PREFIX, SETTINGS_BACKUP_KEY_PREFIX, QUARANTINE_KEY];
 
 function parseNotice(raw) {
   if (typeof raw !== 'string' || raw === '') return null;
@@ -303,7 +311,7 @@ function parseVersion(raw) {
 const stamp = date => date.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 
 // ---- The store ----
-// prefs: { get(key) -> string | null, set(key, value), remove(key) }
+// prefs: { get(key) -> string | null, set(key, value), remove(key), keys() -> [key] }
 // keys:  { reminders, nextId }: the EXISTING keys, passed in so they are never renamed here.
 export function createReminderStorage({ prefs, keys, now = () => new Date() }) {
   let saveAllowed = true;
@@ -432,6 +440,20 @@ export function createReminderStorage({ prefs, keys, now = () => new Date() }) {
     getNotice: async () => parseNotice(await prefs.get(NOTICE_KEY)),
     // Emergency stop for callers that hit an unexpected failure while loading.
     blockSaving: () => { saveAllowed = false; },
+    // Everything set aside or backed up during a recovery, unaltered, as one
+    // text the user can copy somewhere safe. -> { count, text } or null.
+    collectRecoveryData: async () => {
+      try {
+        if (typeof prefs.keys !== 'function') return null;
+        const keys = (await prefs.keys()).filter(k => RECOVERY_KEY_PREFIXES.some(p => k.startsWith(p))).sort();
+        if (!keys.length) return null;
+        const items = {};
+        for (const key of keys) items[key] = await prefs.get(key);
+        return { count: keys.length, text: JSON.stringify({ app: 'Tickmark', exportedAt: now().toISOString(), items }, null, 2) };
+      } catch {
+        return null;
+      }
+    },
     get saveAllowed() { return saveAllowed; },
   };
 }

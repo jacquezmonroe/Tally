@@ -145,3 +145,52 @@ test('plain times are unchanged', () => {
   assert.equal(extractExplicitTime('at 12 pm').hour, 12);
   assert.deepEqual(extractExplicitTime('at 9:05 pm'), { hour: 21, minute: 5, matchedText: '9:05 pm' });
 });
+
+// "every day" wins over a weekday name that is just part of the title.
+test('"every day" with a weekday word in the title stays daily, and the weekday stays in the name', () => {
+  const r = parseVoiceInput('buy Friday paper every day at 9 am');
+  assert.deepEqual(r.recurrence.type, 'daily');
+  assert.equal(r.name, 'Buy Friday paper');
+});
+
+test('"daily" with a weekday word in the title stays daily', () => {
+  assert.equal(parseVoiceInput('check the Monday report daily at 8 am').recurrence.type, 'daily');
+});
+
+test('a weekday that is itself the schedule still wins ("every Monday", "on Monday")', () => {
+  assert.deepEqual(parseVoiceInput('every day stretch, and every Monday weigh in at 9 am').recurrence.daysOfWeek, [1]);
+  assert.deepEqual(parseVoiceInput('take pills on Monday at 9 am').recurrence.daysOfWeek, [1]);
+  assert.deepEqual(parseVoiceInput('water plants every Monday at 9 am').recurrence.daysOfWeek, [1]);
+});
+
+// A bare "at H:MM" that can only be 24-hour time is not vague.
+test('"at 0:30", "at 13:30" and "at 21" are unambiguous 24-hour times', () => {
+  assert.deepEqual(extractExplicitTime('take pills at 0:30'), { hour: 0, minute: 30, matchedText: '0:30' });
+  assert.deepEqual(extractExplicitTime('take pills at 13:30'), { hour: 13, minute: 30, matchedText: '13:30' });
+  assert.deepEqual(extractExplicitTime('take pills at 21'), { hour: 21, minute: 0, matchedText: '21' });
+  assert.equal(extractExplicitTime('take pills at 8').vague, true); // 8 could be AM or PM
+  assert.equal(extractExplicitTime('take pills at 12:30').vague, true);
+});
+
+// ---- Monthly phrases leave nothing behind in the name ----
+// "on the 31st of every month" used to become "Pills of month".
+for (const [said, day] of [
+  ['pills on the 31st of every month at 9am', 31],
+  ['pills on the 15th of each month at 9am', 15],
+  ['pills on the 1st of the month at 9am', 1],
+  ['pills on the 15th every month at 9am', 15],
+  ['pills every month on the 15th at 9am', 15],
+  ['pills on the 2nd monthly at 9am', 2],
+]) {
+  test(`monthly: "${said}" is day ${day} with the name "Pills"`, () => {
+    const r = parseVoiceInput(said);
+    assert.equal(r.recurrence.type, 'monthlyDate');
+    assert.equal(r.recurrence.dayOfMonth, day);
+    assert.equal(r.name, 'Pills');
+  });
+}
+
+test('monthly: a plain "on the 15th" still works, and "month" in a real title is kept', () => {
+  assert.equal(parseVoiceInput('pills on the 15th at 9am').name, 'Pills');
+  assert.equal(parseVoiceInput('pay the month end bill on the 28th at 9am').name, 'Pay the month end bill');
+});

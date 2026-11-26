@@ -14,7 +14,11 @@
 //   slots 1 to 7  weekly alerts: slot = weekday + 1 (Sunday 1 ... Saturday 7),
 //                 which also happens to be the plugin's own weekday number
 //   slot 8        snooze
-//   slots 9 to 15 reserved
+//   slots 9, 10   monthly on the 29th-31st: the next two short-month occurrences
+//                 (slot 0 is the repeating "day N" alert)
+//   slots 11, 12  a daily or weekly dose taken early today: the 2nd and 3rd
+//                 occurrences of its bridge (see bridgeFor)
+//   slots 13 to 15 reserved
 // Every (reminder, kind of alert) pair gets its own id, so ids can never
 // collide (the old scheme gave a weekly alert id*100+weekday, which equals
 // another reminder's plain id once ids reach 100). Reminder ids are capped at
@@ -34,7 +38,7 @@
 // Quiet hours: the alert still arrives on time, silently (no `sound`).
 
 import { getNotificationBody } from './personalization.js';
-import { isExpiredOneTime } from './due.js';
+import { isExpiredOneTime, appliesToday, isOverdueOneTime, dateFromKey, countBadge } from './due.js';
 import { isWithinQuietHours } from './settings.js';
 import { todayKey } from './streak.js';
 import { reminderActionTypes, REMINDER_ACTION_TYPE_ID } from './notificationActions.js';
@@ -43,10 +47,19 @@ import { MAX_REMINDER_ID } from './storage.js';
 export const ALERT_TITLE = 'Tickmark';
 export const SLOT_MAIN = 0;
 export const SLOT_SNOOZE = 8;
+export const SLOT_MONTHLY_NEXT = 9;
+export const SLOT_MONTHLY_NEXT_2 = 10;
+export const BRIDGE_SLOTS = [11, 12];
+export const BRIDGE_LENGTH = 3; // occurrences covered by one-time alerts after an early dose
 export const SLOTS_PER_REMINDER = 16;
 export const SCHEME_VERSION = 2;
 export const SCHEME_KEY = 'tally-notification-scheme';
 export const SNOOZE_MINUTES = 10;
+// iOS keeps only the 64 soonest pending alerts per app and silently drops the
+// rest. A few slots stay free so a snooze never pushes a reminder's alert out.
+export const IOS_PENDING_LIMIT = 64;
+export const SNOOZE_RESERVE = 4;
+export const ALERT_BUDGET = IOS_PENDING_LIMIT - SNOOZE_RESERVE;
 
 // ---- IDs ----
 export function notificationId(reminderId, slot) {
@@ -87,30 +100,110 @@ const fingerprintOf = (parts) => {
 // ---- Building the alerts that should exist ----
 const parseTime = (time) => time.split(':').map(Number);
 
-function scheduleFor(reminder, slot, hour, minute) {
+// iOS can only repeat "day N of every month", which silently skips months
+// without that day. So the 29th-31st (which fall back to a short month's last
+// day, see appliesToday) keep that repeating alert, which never runs out even
+// if the app isn't opened, and get one-time alerts for the next two short-month
+// occurrences; every reconcile (launch, resume, any change) moves those forward.
+const isMonthEnd = (rec) => rec.type === 'monthlyDate' && rec.dayOfMonth > 28;
+
+// Four years always holds two short months, even for the 29th (only February
+// of a common year).
+function nextShortMonthTimes(reminder, hour, minute, now, count = 2) {
+  const times = [];
+  for (let i = 0; i <= 4 * 366 && times.length < count; i++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    if (day.getDate() === reminder.recurrence.dayOfMonth || !appliesToday(reminder, day)) continue;
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
+    if (at > now) times.push(at);
+  }
+  return times;
+}
+
+function scheduleFor(reminder, slot, hour, minute, now) {
   const rec = reminder.recurrence || { type: 'daily' };
   if (rec.type === 'daysOfWeek') return { on: { weekday: slot, hour, minute }, allowWhileIdle: true };
+  if (isMonthEnd(rec) && slot !== SLOT_MAIN) return { at: nextShortMonthTimes(reminder, hour, minute, now)[slot === SLOT_MONTHLY_NEXT ? 0 : 1], allowWhileIdle: true };
   if (rec.type === 'monthlyDate') return { on: { day: rec.dayOfMonth, hour, minute }, allowWhileIdle: true };
   if (rec.type === 'once') {
     const [y, m, d] = rec.date.split('-').map(Number);
-    return { at: new Date(y, m - 1, d, hour, minute), allowWhileIdle: true };
+    return onDateAt(y, m, d, hour, minute);
   }
   return { on: { hour, minute }, allowWhileIdle: true };
 }
 
-function slotsFor(reminder) {
-  const rec = reminder.recurrence || { type: 'daily' };
-  return rec.type === 'daysOfWeek' ? (rec.daysOfWeek || []).map(dow => dow + 1) : [SLOT_MAIN];
+// A one-time alert on a calendar date (month 1-12). A date with no zone fires
+// at this wall time wherever the phone is (an `at` time becomes a fixed-instant
+// countdown in the plugin). The exception is a time skipped by spring-forward,
+// which a calendar alert may never match: that keeps the fixed instant, which
+// moves forward the same way isOverdue does (02:30 -> 03:30).
+function onDateAt(y, m, d, hour, minute) {
+  const at = new Date(y, m - 1, d, hour, minute);
+  if (at.getHours() !== hour || at.getMinutes() !== minute) return { at, allowWhileIdle: true };
+  return { on: { year: y, month: m, day: d, hour, minute }, allowWhileIdle: true };
 }
 
+// ---- A dose taken before its time ----
+// A repeating alert can't skip one day, so a daily or weekly reminder already
+// taken today, before today's time, would still alert today ("Time for ..."
+// for a dose already taken). Its alert for today's slot is swapped for one-time
+// alerts for its next BRIDGE_LENGTH occurrences. Once today's time has passed,
+// the next reconcile (launch, resume, any change) puts the repeating alert back.
+// The bridge is optional: fitAlertBudget uses it only with room to spare.
+// -> null, or { slot, schedules: [schedule for slot, then for BRIDGE_SLOTS] }
+function bridgeFor(reminder, hour, minute, now) {
+  const rec = reminder.recurrence || { type: 'daily' };
+  if (rec.type !== 'daily' && rec.type !== 'daysOfWeek') return null;
+  if (reminder.takenDate !== todayKey(now) || !appliesToday(reminder, now)) return null;
+  if (new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute) <= now) return null;
+  const step = rec.type === 'daily' ? 1 : 7; // a weekly slot is one weekday
+  const schedules = [];
+  for (let n = 1; n <= BRIDGE_LENGTH; n++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n * step);
+    schedules.push(onDateAt(day.getFullYear(), day.getMonth() + 1, day.getDate(), hour, minute));
+  }
+  return { slot: rec.type === 'daily' ? SLOT_MAIN : now.getDay() + 1, schedules };
+}
+
+function slotsFor(reminder) {
+  const rec = reminder.recurrence || { type: 'daily' };
+  if (rec.type === 'daysOfWeek') return (rec.daysOfWeek || []).map(dow => dow + 1);
+  return isMonthEnd(rec) ? [SLOT_MAIN, SLOT_MONTHLY_NEXT, SLOT_MONTHLY_NEXT_2] : [SLOT_MAIN];
+}
+
+// ---- The badge an alert sets ----
+// iOS sets the app icon badge to the alert's own number; it can't add one. So
+// each alert carries how many reminders will be overdue when it next fires,
+// counted exactly like the in-app badge (countBadge). Never less than 1: a
+// badge of 0 would also clear Notification Center. A repeating alert's number
+// is for its next firing; every reconcile (launch, resume, check-off) renews it.
+
+// When this schedule next fires after `now`, as the plugin's triggers do.
+function nextFireTime(schedule, now) {
+  if (schedule.at) return schedule.at;
+  const { year, month, day, weekday, hour, minute } = schedule.on;
+  if (year !== undefined) return new Date(year, month - 1, day, hour, minute);
+  for (let i = 0; i <= 366; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hour, minute);
+    if (d <= now) continue;
+    if (weekday !== undefined && d.getDay() !== weekday - 1) continue;
+    if (day !== undefined && d.getDate() !== day) continue;
+    return d;
+  }
+  return null;
+}
+
+const badgeAt = (reminders, when) => (when ? Math.max(1, countBadge(reminders, when)) : 1);
+
 // -> { items: [{ id, reminderId, slot, fingerprint, notification }], problems: [{ reminderId, reason }] }
-// An expired one-time reminder has nothing left to alert about. A reminder
+// An expired or already-completed one-time reminder has nothing left to alert about. A reminder
 // that can't be given a valid id or time is reported, never thrown on.
 export function desiredNotifications({ reminders, settings, userName, now = new Date(), random = Math.random }) {
   const items = [];
   const problems = [];
   for (const reminder of reminders) {
     if (isExpiredOneTime(reminder, now)) continue;
+    if (reminder.recurrence && reminder.recurrence.type === 'once' && reminder.takenDate) continue; // done early: nothing left to alert about
     const [hour, minute] = parseTime(reminder.time || '');
     if (!Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isSafeInteger(reminder.id)
       || reminder.id < 1 || reminder.id > MAX_REMINDER_ID) {
@@ -118,13 +211,16 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
       continue;
     }
     const sound = soundFor(hour, minute, settings);
-    for (const slot of slotsFor(reminder)) {
-      const schedule = scheduleFor(reminder, slot, hour, minute);
+    // The alert's own time: a Mark Taken press is counted against it, even if
+    // the reminder's time is edited after the alert fired (see resolveMarkTaken).
+    const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    const makeItem = (slot, schedule) => {
+      const badge = badgeAt(reminders, nextFireTime(schedule, now));
       const fingerprint = fingerprintOf({
         v: SCHEME_VERSION, slot, name: reminder.name, userName: userName || '',
-        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge: 1, action: REMINDER_ACTION_TYPE_ID,
+        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge, action: REMINDER_ACTION_TYPE_ID, time,
       });
-      items.push({
+      return {
         id: notificationId(reminder.id, slot),
         reminderId: reminder.id,
         slot,
@@ -135,19 +231,28 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
           body: getNotificationBody(reminder.name, userName, random()),
           schedule,
           ...(sound ? { sound } : {}),
-          badge: 1,
+          badge,
           actionTypeId: REMINDER_ACTION_TYPE_ID,
-          extra: { reminderId: reminder.id, fp: fingerprint },
+          extra: { reminderId: reminder.id, fp: fingerprint, time },
         },
-      });
+      };
+    };
+    const bridge = bridgeFor(reminder, hour, minute, now);
+    for (const slot of slotsFor(reminder)) {
+      const plain = makeItem(slot, scheduleFor(reminder, slot, hour, minute, now));
+      if (!bridge || slot !== bridge.slot) { items.push(plain); continue; }
+      // Bridged: the plain repeating alert is kept as the fallback when the
+      // budget has no room for the extra alerts.
+      const slots = [slot, ...BRIDGE_SLOTS];
+      bridge.schedules.forEach((schedule, i) => items.push({ ...makeItem(slots[i], schedule), bridge: true, ...(i === 0 ? { fallback: plain } : {}) }));
     }
   }
   return { items, problems };
 }
 
 // The snooze alert: one extra one-time alert a few minutes from now, built the
-// same way as the others (same sound rules, same action button).
-export function buildSnooze({ reminder, settings, userName, now = new Date(), minutes = SNOOZE_MINUTES, random = Math.random }) {
+// same way as the others (same sound rules, same action button, same badge count).
+export function buildSnooze({ reminder, reminders = [reminder], settings, userName, now = new Date(), minutes = SNOOZE_MINUTES, random = Math.random }) {
   const at = new Date(now.getTime() + minutes * 60 * 1000);
   const sound = soundFor(at.getHours(), at.getMinutes(), settings);
   return {
@@ -156,21 +261,58 @@ export function buildSnooze({ reminder, settings, userName, now = new Date(), mi
     body: getNotificationBody(reminder.name, userName, random()),
     schedule: { at, allowWhileIdle: true },
     ...(sound ? { sound } : {}),
-    badge: 1,
+    badge: badgeAt(reminders, at),
     actionTypeId: REMINDER_ACTION_TYPE_ID,
-    extra: { reminderId: reminder.id, fp: 'snooze' },
+    extra: { reminderId: reminder.id, fp: 'snooze', day: todayKey(now) }, // the day this snooze belongs to
   };
+}
+
+// Keeps whole reminders, oldest (lowest id) first, while they fit in the
+// budget; a later reminder that is smaller can still fit after one that
+// doesn't. A bridge (an early dose, see bridgeFor) is fitted only afterwards,
+// with the room left over, so it never pushes any reminder out; without room,
+// that reminder keeps its plain repeating alert. -> { items, over: [reminderId] }
+export function fitAlertBudget(items, budget = ALERT_BUDGET) {
+  const byReminder = new Map();
+  for (const item of items) {
+    if (!byReminder.has(item.reminderId)) byReminder.set(item.reminderId, []);
+    byReminder.get(item.reminderId).push(item);
+  }
+  const plainOf = (group) => group.flatMap(i => (i.bridge ? (i.fallback ? [i.fallback] : []) : [i]));
+  const chosen = new Map();
+  let used = 0;
+  const over = [];
+  for (const id of [...byReminder.keys()].sort((a, b) => a - b)) {
+    const plain = plainOf(byReminder.get(id));
+    if (used + plain.length <= budget) { chosen.set(id, plain); used += plain.length; } else over.push(id);
+  }
+  for (const [id, plain] of chosen) {
+    const group = byReminder.get(id);
+    if (group.some(i => i.bridge) && used - plain.length + group.length <= budget) {
+      chosen.set(id, group);
+      used += group.length - plain.length;
+    }
+  }
+  return { items: [...chosen.values()].flat(), over };
 }
 
 // ---- Comparing what should exist with what does ----
 
-// A pending snooze is kept while its reminder still exists, hasn't been done
-// today, and the snooze time is still ahead. Anything else is cancelled.
+// A pending snooze is kept while its reminder still exists, still applies on
+// the day the snooze belongs to (it may have been edited to another day since),
+// hasn't been done for that day, and the snooze time is still ahead. Anything
+// else is cancelled. Snoozes from before the day was recorded use today.
 function snoozeStillWanted(pendingItem, remindersById, now) {
   const decoded = decodeNotificationId(pendingItem.id);
   if (!decoded || decoded.slot !== SLOT_SNOOZE) return false;
   const reminder = remindersById.get(decoded.reminderId);
-  if (!reminder || reminder.takenDate === todayKey(now)) return false;
+  const recorded = pendingItem.extra && pendingItem.extra.day;
+  const day = typeof recorded === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(recorded) ? recorded : todayKey(now);
+  if (!reminder || reminder.takenDate === day) return false;
+  const isOnce = reminder.recurrence && reminder.recurrence.type === 'once';
+  if (isOnce && reminder.takenDate) return false; // a one-time reminder done on any day is finished
+  const dayDate = dateFromKey(day);
+  if (!appliesToday(reminder, dayDate) && !isOverdueOneTime(reminder, dayDate)) return false;
   const at = pendingItem.schedule?.at ? new Date(pendingItem.schedule.at) : null;
   return !at || Number.isNaN(at.getTime()) || at > now;
 }
@@ -217,14 +359,17 @@ async function readPermission(plugin) {
 //   permission: 'granted' | 'denied' | 'prompt' | 'unavailable',
 //   ok: true when every reminder's alerts are as they should be,
 //   scheduled: [reminderId], unchanged: [reminderId], cancelled: [id],
-//   failed: [{ reminderId, reason: 'schedule_failed' | 'cancel_failed' | 'permission_denied' | 'unschedulable', message? }],
+//   failed: [{ reminderId, reason: 'schedule_failed' | 'cancel_failed' | 'permission_denied' | 'unschedulable' | 'over_limit', message? }],
 //   failedCancels: [id] (alerts that should have been removed but couldn't be),
 //   cleanupSkipped: true if the list of pending alerts couldn't be read
 // }
 export async function reconcile({ plugin, reminders, settings, userName, now = new Date(), random = Math.random }) {
   const result = { permission: 'unavailable', ok: true, scheduled: [], unchanged: [], cancelled: [], failed: [], failedCancels: [], cleanupSkipped: false };
-  const { items, problems } = desiredNotifications({ reminders, settings, userName, now, random });
+  const desired = desiredNotifications({ reminders, settings, userName, now, random });
+  const { problems } = desired;
+  const { items, over } = fitAlertBudget(desired.items);
   for (const p of problems) result.failed.push({ reminderId: p.reminderId, reason: p.reason });
+  for (const reminderId of over) result.failed.push({ reminderId, reason: 'over_limit' });
 
   result.permission = await readPermission(plugin);
   if (result.permission === 'unavailable') return { ...result, failed: [], ok: true };
@@ -325,10 +470,16 @@ export async function ensureSchemeMigrated({ plugin, prefs }) {
 export function createNotifier({ plugin, prefs, getReminders, getSettings, getUserName, now = () => new Date(), random = Math.random }) {
   let running = null;
   let queued = null;
+  let migrating = null; // the one-time upgrade cleanup, once started
 
-  const runOnce = () => reconcile({
-    plugin, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), random,
-  });
+  // Waits for the upgrade cleanup first: it cancels every pending alert, so it
+  // must never run alongside a reconcile.
+  const runOnce = async () => {
+    if (migrating) await migrating;
+    return reconcile({
+      plugin, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), random,
+    });
+  };
 
   function reconcileNow() {
     if (!running) {
@@ -350,19 +501,34 @@ export function createNotifier({ plugin, prefs, getReminders, getSettings, getUs
     // -> { ok, reason? }  Schedules one snooze alert. It does not reconcile: a
     // later reconcile keeps a snooze while the reminder exists, is not taken
     // today, and the snooze time is still ahead (see planChanges).
+    // At most SNOOZE_RESERVE snoozes wait at once (the room the alert budget
+    // leaves under iOS's 64); one more is refused with 'over_limit', since iOS
+    // would otherwise silently drop a reminder's alert. Re-snoozing the same
+    // reminder replaces its snooze, so it always fits.
     async snooze(reminder, minutes = SNOOZE_MINUTES) {
       const permission = await readPermission(plugin);
       if (permission === 'unavailable') return { ok: false, reason: 'unavailable' };
       if (permission !== 'granted') return { ok: false, reason: 'permission_denied' };
       try {
-        await plugin.schedule({ notifications: [buildSnooze({ reminder, settings: getSettings(), userName: getUserName(), now: now(), minutes, random })] });
+        const snooze = buildSnooze({ reminder, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), minutes, random });
+        const pending = (await plugin.getPending()).notifications || [];
+        const otherSnoozes = pending.filter(p => p.id !== snooze.id && decodeNotificationId(p.id)?.slot === SLOT_SNOOZE).length;
+        if (otherSnoozes >= SNOOZE_RESERVE) return { ok: false, reason: 'over_limit' };
+        await plugin.schedule({ notifications: [snooze] });
         return { ok: true };
       } catch (e) {
         return { ok: false, reason: 'schedule_failed', message: messageOf(e) };
       }
     },
 
-    // Runs the one-time upgrade cleanup. Call before the first reconcile.
-    migrate: () => ensureSchemeMigrated({ plugin, prefs }),
+    // Runs the one-time upgrade cleanup, after any reconcile already running;
+    // reconciles asked for meanwhile wait for it. Call before the first reconcile.
+    migrate() {
+      if (!migrating) {
+        const busy = running ? running.catch(() => {}) : Promise.resolve();
+        migrating = busy.then(() => ensureSchemeMigrated({ plugin, prefs }));
+      }
+      return migrating;
+    },
   };
 }

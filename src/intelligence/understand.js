@@ -27,6 +27,17 @@ const NUMBER_WORDS = {
 const NUMBER_PATTERN = `\\d+|${Object.keys(NUMBER_WORDS).join('|')}`;
 const PERIOD_HOURS = { morning: 8, afternoon: 14, evening: 19, night: 21 };
 export const MAX_COUNT = 10;
+// Same limit as the name fields (maxlength="60" in index.html). Filling a
+// field from code bypasses maxlength, so drafts are cut to fit here.
+export const MAX_NAME_LENGTH = 60;
+
+// Cut at the last whole word that fits (a single over-long word is cut hard).
+function fitName(name) {
+  if (typeof name !== 'string' || name.length <= MAX_NAME_LENGTH) return name;
+  const cut = name.slice(0, MAX_NAME_LENGTH + 1);
+  const atWord = cut.lastIndexOf(' ');
+  return (atWord > 0 ? cut.slice(0, atWord) : name.slice(0, MAX_NAME_LENGTH)).trim();
+}
 
 // ---- small date helpers (all local calendar arithmetic) ----
 const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -461,7 +472,7 @@ export function parseReminderRequest(rawText, now = new Date()) {
   }
 
   return {
-    name,
+    name: fitName(name),
     time: schedule.time,
     recurrence: schedule.recurrence,
     count: counted.count,
@@ -546,7 +557,7 @@ export function draftFromParts(parts, original, now = new Date()) {
     });
   }
   return {
-    name: clean.title,
+    name: fitName(clean.title),
     time: schedule.time,
     recurrence: schedule.recurrence,
     count: 1,

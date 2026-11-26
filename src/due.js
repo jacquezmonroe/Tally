@@ -12,7 +12,9 @@ export function appliesToday(reminder, date = new Date()) {
     return (recurrence.daysOfWeek || []).includes(date.getDay());
   }
   if (recurrence.type === 'monthlyDate') {
-    return recurrence.dayOfMonth === date.getDate();
+    // The 29th, 30th or 31st falls back to the last day of a shorter month.
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    return Math.min(recurrence.dayOfMonth, lastDay) === date.getDate();
   }
   if (recurrence.type === 'once') {
     return recurrence.date === todayKey(date);
@@ -36,14 +38,12 @@ export function isPendingToday(reminder, date = new Date()) {
   return appliesToday(reminder, date) && reminder.takenDate !== todayKey(date);
 }
 
-function toMinutes(hhmm) {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + m;
-}
-
+// The scheduled time is built as a real Date (like the alert's), so on a
+// spring-forward day a time in the skipped hour moves forward the same way.
 export function isOverdue(reminder, date = new Date()) {
   if (!isPendingToday(reminder, date)) return false;
-  return toMinutes(reminder.time) <= date.getHours() * 60 + date.getMinutes();
+  const [h, m] = reminder.time.split(':').map(Number);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m) <= date;
 }
 
 // Soonest first, so "the next one up" is always element 0.
@@ -83,7 +83,7 @@ export function nextOccurrence(reminder, date = new Date()) {
     const day = new Date(y, m - 1, d);
     return day > startOfDay(date) ? day : null;
   }
-  // A year of lookahead covers every pattern, including "the 31st" and "the 29th".
+  // A year of lookahead covers every pattern.
   for (let i = 1; i <= 366; i++) {
     const candidate = addDays(date, i);
     if (appliesToday(reminder, candidate)) return candidate;
@@ -184,4 +184,10 @@ export function isAllDoneToday(reminders, date = new Date()) {
   if (relevantToday.length === 0) return false;
   const todayStr = todayKey(date);
   return relevantToday.every(r => r.takenDate === todayStr);
+}
+
+// Milliseconds until the next local midnight, measured on the wall clock (so a
+// 23- or 25-hour day around a DST change still lands on 00:00).
+export function msUntilNextLocalMidnight(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
 }
