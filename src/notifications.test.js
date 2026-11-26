@@ -25,7 +25,7 @@ import {
   SNOOZE_RESERVE,
 } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
-import { fakePlugin, fakePrefs } from './notifications.fake.js';
+import { fakePlugin, fakePrefs, IOS_LIMIT } from './notifications.fake.js';
 
 const NOW = new Date(2026, 9, 31, 14, 0); // Sat Oct 31 2026, 2:00 PM local
 const TODAY = '2026-10-31';
@@ -686,6 +686,35 @@ test('snooze: if the waiting alerts cannot be read, the snooze is refused rather
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'schedule_failed');
   assert.equal(plugin.pending.size, ALERT_BUDGET);
+});
+
+// ---- Never past iOS's 64 pending alerts, across a whole busy session ----
+test('the fake plugin notices going past 64 the way iOS would (silently)', async () => {
+  assert.equal(IOS_LIMIT, IOS_PENDING_LIMIT);
+  const plugin = fakePlugin();
+  const many = Array.from({ length: 65 }, (_, i) => ({ id: (i + 1) * 16, title: 'Tickmark', body: 'x' }));
+  await plugin.schedule({ notifications: many }); // iOS accepts these without an error
+  assert.equal(plugin.overLimit, true);
+});
+
+test('a busy session never has more than 64 alerts pending: full budget, month-end, one-time, snoozes, edits, deletes', async () => {
+  const now = new Date(2026, 10, 26, 8, 0);
+  let reminders = [
+    ...Array.from({ length: 6 }, (_, i) => weekly(i + 1, [0, 1, 2, 3, 4, 5, 6])), // 42
+    monthly(7, 31), monthly(8, 30), // 3 + 3
+    ...Array.from({ length: 6 }, (_, i) => once(9 + i, '2026-12-25')), // 6
+    ...Array.from({ length: 10 }, (_, i) => rem(15 + i)), // 10, of which some go over budget
+  ];
+  const plugin = fakePlugin();
+  const notifier = createNotifier({ plugin, prefs: fakePrefs(), getReminders: () => reminders, getSettings: () => SETTINGS, getUserName: () => null, now: () => now, random: () => 0 });
+  await notifier.reconcile();
+  for (const r of reminders.slice(0, SNOOZE_RESERVE + 2)) await notifier.snooze(r); // 2 more than fit
+  reminders = reminders.map(r => (r.id === 15 ? { ...r, time: '10:30' } : r));
+  await notifier.reconcile();
+  reminders = [...reminders.filter(r => r.id !== 1), rem(40), rem(41)]; // delete a 7-alert reminder, add two
+  await notifier.reconcile();
+  await notifier.reconcile();
+  assert.equal(plugin.overLimit, false, `peaked at ${plugin.maxPending} pending`);
 });
 
 // ---- no network, storage or UI in the engine ----

@@ -7,11 +7,16 @@
 //   - getPending() returns id, title, body, extra and schedule, but NOT sound
 //   - cancel removes by id; checkPermissions reports { display }
 //   - ids must be whole numbers (checked here against the strict 32-bit range)
+//   - iOS keeps only the 64 soonest pending alerts per app and silently drops
+//     the rest; it never reports an error. So, like iOS, this never fails over
+//     the limit: it records the most alerts ever pending at once (maxPending)
+//     and whether that went past IOS_LIMIT (overLimit), for tests to assert on.
 // It proves our logic and error handling. It cannot prove what iOS itself does
 // with a real alert: that needs a real device.
 
 const INT32_MIN = -(2 ** 31);
 const INT32_MAX = 2 ** 31 - 1;
+export const IOS_LIMIT = 64;
 
 export function fakePlugin({ permission = 'granted' } = {}) {
   const plugin = {
@@ -21,6 +26,8 @@ export function fakePlugin({ permission = 'granted' } = {}) {
     registered: 0,
     active: 0,
     maxActive: 0,
+    maxPending: 0,        // the most alerts ever pending at once
+    get overLimit() { return plugin.maxPending > IOS_LIMIT; }, // iOS would have dropped one silently
     // Failure switches: set a function that returns true/throws for what should fail.
     failSchedule: () => false,   // (notification) => boolean
     failCancel: () => false,     // (ids) => boolean
@@ -72,6 +79,7 @@ export function fakePlugin({ permission = 'granted' } = {}) {
       if (plugin.failSchedule(n)) throw new Error(`schedule failed for ${n.id}`);
     }
     for (const n of notifications) plugin.pending.set(String(n.id), JSON.parse(JSON.stringify(n)));
+    plugin.maxPending = Math.max(plugin.maxPending, plugin.pending.size);
     return { notifications: notifications.map(n => ({ id: n.id })) };
   });
 
@@ -85,7 +93,7 @@ export function fakePlugin({ permission = 'granted' } = {}) {
   plugin.pendingIds = () => [...plugin.pending.values()].map(n => n.id).sort((a, b) => a - b);
   plugin.callCount = (name) => plugin.calls.filter(([n]) => n === name).length;
   plugin.scheduledNotifications = () => plugin.calls.filter(([n]) => n === 'schedule').flatMap(([, d]) => d);
-  plugin.resetCalls = () => { plugin.calls.length = 0; plugin.maxActive = 0; };
+  plugin.resetCalls = () => { plugin.calls.length = 0; plugin.maxActive = 0; plugin.maxPending = plugin.pending.size; };
   return plugin;
 }
 
