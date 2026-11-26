@@ -3,7 +3,7 @@
 //   FIXED ...  proved a bug; passes now that it is fixed (a regression guard).
 //              Its name still describes the bug it caught.
 //   BUG ...    proves a bug that is still open; marked `todo`, so it runs and
-//              is reported but does not fail `npm test`.
+//              is reported but does not fail `npm test`. (None open right now.)
 //   OK ...     ruled a suspected bug out; documents that the area was checked.
 // Part of `npm test`.
 import test, { after } from 'node:test';
@@ -304,7 +304,7 @@ test('OK R2 streak: same late press with the default 1-day grace keeps the strea
 
 // ---------- 1. Alerts for a dose already taken ----------
 
-test('BUG R2 taken early: a daily pill marked taken at 08:00 still gets its 09:00 "time to take" alert today', { todo: 'open: needs a design decision (bug #2: one-time alerts per day instead of repeating ones)' }, () => {
+test('FIXED R2 taken early: a daily pill marked taken at 08:00 still gets its 09:00 "time to take" alert today', () => {
   // Repeating calendar triggers can't skip one day, and desiredNotifications ignores takenDate for
   // recurring reminders. For a medication app this invites a second dose.
   const r = base({ time: '09:00', takenDate: '2026-11-26', lastCompletedDate: '2026-11-26' });

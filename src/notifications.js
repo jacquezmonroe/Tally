@@ -16,7 +16,9 @@
 //   slot 8        snooze
 //   slots 9, 10   monthly on the 29th-31st: the next two short-month occurrences
 //                 (slot 0 is the repeating "day N" alert)
-//   slots 11 to 15 reserved
+//   slots 11, 12  a daily or weekly dose taken early today: the 2nd and 3rd
+//                 occurrences of its bridge (see bridgeFor)
+//   slots 13 to 15 reserved
 // Every (reminder, kind of alert) pair gets its own id, so ids can never
 // collide (the old scheme gave a weekly alert id*100+weekday, which equals
 // another reminder's plain id once ids reach 100). Reminder ids are capped at
@@ -47,6 +49,8 @@ export const SLOT_MAIN = 0;
 export const SLOT_SNOOZE = 8;
 export const SLOT_MONTHLY_NEXT = 9;
 export const SLOT_MONTHLY_NEXT_2 = 10;
+export const BRIDGE_SLOTS = [11, 12];
+export const BRIDGE_LENGTH = 3; // occurrences covered by one-time alerts after an early dose
 export const SLOTS_PER_REMINDER = 16;
 export const SCHEME_VERSION = 2;
 export const SCHEME_KEY = 'tally-notification-scheme';
@@ -122,17 +126,43 @@ function scheduleFor(reminder, slot, hour, minute, now) {
   if (isMonthEnd(rec) && slot !== SLOT_MAIN) return { at: nextShortMonthTimes(reminder, hour, minute, now)[slot === SLOT_MONTHLY_NEXT ? 0 : 1], allowWhileIdle: true };
   if (rec.type === 'monthlyDate') return { on: { day: rec.dayOfMonth, hour, minute }, allowWhileIdle: true };
   if (rec.type === 'once') {
-    // A calendar date with no zone fires at this wall time wherever the phone
-    // is (an `at` time becomes a fixed-instant countdown in the plugin). The
-    // exception is a time skipped by spring-forward, which a calendar alert may
-    // never match: that keeps the fixed instant, which moves forward the same
-    // way isOverdue does (02:30 -> 03:30).
     const [y, m, d] = rec.date.split('-').map(Number);
-    const at = new Date(y, m - 1, d, hour, minute);
-    if (at.getHours() !== hour || at.getMinutes() !== minute) return { at, allowWhileIdle: true };
-    return { on: { year: y, month: m, day: d, hour, minute }, allowWhileIdle: true };
+    return onDateAt(y, m, d, hour, minute);
   }
   return { on: { hour, minute }, allowWhileIdle: true };
+}
+
+// A one-time alert on a calendar date (month 1-12). A date with no zone fires
+// at this wall time wherever the phone is (an `at` time becomes a fixed-instant
+// countdown in the plugin). The exception is a time skipped by spring-forward,
+// which a calendar alert may never match: that keeps the fixed instant, which
+// moves forward the same way isOverdue does (02:30 -> 03:30).
+function onDateAt(y, m, d, hour, minute) {
+  const at = new Date(y, m - 1, d, hour, minute);
+  if (at.getHours() !== hour || at.getMinutes() !== minute) return { at, allowWhileIdle: true };
+  return { on: { year: y, month: m, day: d, hour, minute }, allowWhileIdle: true };
+}
+
+// ---- A dose taken before its time ----
+// A repeating alert can't skip one day, so a daily or weekly reminder already
+// taken today, before today's time, would still alert today ("Time for ..."
+// for a dose already taken). Its alert for today's slot is swapped for one-time
+// alerts for its next BRIDGE_LENGTH occurrences. Once today's time has passed,
+// the next reconcile (launch, resume, any change) puts the repeating alert back.
+// The bridge is optional: fitAlertBudget uses it only with room to spare.
+// -> null, or { slot, schedules: [schedule for slot, then for BRIDGE_SLOTS] }
+function bridgeFor(reminder, hour, minute, now) {
+  const rec = reminder.recurrence || { type: 'daily' };
+  if (rec.type !== 'daily' && rec.type !== 'daysOfWeek') return null;
+  if (reminder.takenDate !== todayKey(now) || !appliesToday(reminder, now)) return null;
+  if (new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute) <= now) return null;
+  const step = rec.type === 'daily' ? 1 : 7; // a weekly slot is one weekday
+  const schedules = [];
+  for (let n = 1; n <= BRIDGE_LENGTH; n++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n * step);
+    schedules.push(onDateAt(day.getFullYear(), day.getMonth() + 1, day.getDate(), hour, minute));
+  }
+  return { slot: rec.type === 'daily' ? SLOT_MAIN : now.getDay() + 1, schedules };
 }
 
 function slotsFor(reminder) {
@@ -184,14 +214,13 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
     // The alert's own time: a Mark Taken press is counted against it, even if
     // the reminder's time is edited after the alert fired (see resolveMarkTaken).
     const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-    for (const slot of slotsFor(reminder)) {
-      const schedule = scheduleFor(reminder, slot, hour, minute, now);
+    const makeItem = (slot, schedule) => {
       const badge = badgeAt(reminders, nextFireTime(schedule, now));
       const fingerprint = fingerprintOf({
         v: SCHEME_VERSION, slot, name: reminder.name, userName: userName || '',
         schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge, action: REMINDER_ACTION_TYPE_ID, time,
       });
-      items.push({
+      return {
         id: notificationId(reminder.id, slot),
         reminderId: reminder.id,
         slot,
@@ -206,7 +235,16 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
           actionTypeId: REMINDER_ACTION_TYPE_ID,
           extra: { reminderId: reminder.id, fp: fingerprint, time },
         },
-      });
+      };
+    };
+    const bridge = bridgeFor(reminder, hour, minute, now);
+    for (const slot of slotsFor(reminder)) {
+      const plain = makeItem(slot, scheduleFor(reminder, slot, hour, minute, now));
+      if (!bridge || slot !== bridge.slot) { items.push(plain); continue; }
+      // Bridged: the plain repeating alert is kept as the fallback when the
+      // budget has no room for the extra alerts.
+      const slots = [slot, ...BRIDGE_SLOTS];
+      bridge.schedules.forEach((schedule, i) => items.push({ ...makeItem(slots[i], schedule), bridge: true, ...(i === 0 ? { fallback: plain } : {}) }));
     }
   }
   return { items, problems };
@@ -231,21 +269,31 @@ export function buildSnooze({ reminder, reminders = [reminder], settings, userNa
 
 // Keeps whole reminders, oldest (lowest id) first, while they fit in the
 // budget; a later reminder that is smaller can still fit after one that
-// doesn't. -> { items, over: [reminderId] }
+// doesn't. A bridge (an early dose, see bridgeFor) is fitted only afterwards,
+// with the room left over, so it never pushes any reminder out; without room,
+// that reminder keeps its plain repeating alert. -> { items, over: [reminderId] }
 export function fitAlertBudget(items, budget = ALERT_BUDGET) {
   const byReminder = new Map();
   for (const item of items) {
     if (!byReminder.has(item.reminderId)) byReminder.set(item.reminderId, []);
     byReminder.get(item.reminderId).push(item);
   }
-  const kept = [];
+  const plainOf = (group) => group.flatMap(i => (i.bridge ? (i.fallback ? [i.fallback] : []) : [i]));
+  const chosen = new Map();
+  let used = 0;
   const over = [];
   for (const id of [...byReminder.keys()].sort((a, b) => a - b)) {
-    const group = byReminder.get(id);
-    if (kept.length + group.length <= budget) kept.push(...group);
-    else over.push(id);
+    const plain = plainOf(byReminder.get(id));
+    if (used + plain.length <= budget) { chosen.set(id, plain); used += plain.length; } else over.push(id);
   }
-  return { items: kept, over };
+  for (const [id, plain] of chosen) {
+    const group = byReminder.get(id);
+    if (group.some(i => i.bridge) && used - plain.length + group.length <= budget) {
+      chosen.set(id, group);
+      used += group.length - plain.length;
+    }
+  }
+  return { items: [...chosen.values()].flat(), over };
 }
 
 // ---- Comparing what should exist with what does ----

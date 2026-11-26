@@ -11,6 +11,7 @@ import {
   buildSnooze,
   planChanges,
   reconcile,
+  fitAlertBudget,
   cancelAllPending,
   ensureSchemeMigrated,
   createNotifier,
@@ -129,11 +130,12 @@ test('badge: three untaken 09:00/09:05/09:10 reminders show 1, 2, 3 as each aler
   assert.deepEqual(items.map(i => i.notification.badge), [1, 2, 3]);
 });
 
-test('badge: a reminder already taken today is not counted', () => {
+test('badge: a reminder already taken today is not counted, and an alert never carries 0', () => {
   const now = new Date(2026, 10, 26, 8, 0);
-  const rs = [rem(1, { time: '09:00', takenDate: '2026-11-26' }), rem(2, { time: '09:05' }), rem(3, { time: '09:10' })];
+  // A monthly reminder is not bridged when taken early, so its alert still fires today with nothing overdue.
+  const rs = [monthly(1, 26, { time: '09:00', takenDate: '2026-11-26' }), rem(2, { time: '09:05' }), rem(3, { time: '09:10' })];
   const { items } = desiredNotifications({ reminders: rs, settings: SETTINGS, now, random: () => 0 });
-  assert.deepEqual(items.map(i => i.notification.badge), [1, 1, 2], 'the taken one never drops the badge to 0');
+  assert.deepEqual([1, 2, 3].map(id => badgeOf(items, id)), [1, 1, 2], 'the taken one never drops the badge to 0');
 });
 
 test('badge: an unfinished one-time reminder from an earlier day counts on every alert', () => {
@@ -687,6 +689,81 @@ test('snooze: if the waiting alerts cannot be read, the snooze is refused rather
   assert.equal(r.reason, 'schedule_failed');
   assert.equal(plugin.pending.size, ALERT_BUDGET);
 });
+
+// ---- A dose taken before its time skips today's alert ----
+// A repeating alert can't skip one day, so a daily or weekly reminder taken
+// early today swaps that alert for one-time alerts for its next 3 occurrences
+// (the "bridge"). The next reconcile after today's time puts the repeating
+// alert back. The bridge only uses room left over in the alert budget.
+const THU_8AM = new Date(2026, 10, 26, 8, 0); // Thu Nov 26 2026
+const takenToday = (r) => ({ ...r, takenDate: '2026-11-26' });
+const scheduleBySlot = (items, reminderId) => Object.fromEntries(items.filter(i => i.reminderId === reminderId).map(i => [i.slot, i.notification.schedule.on || i.notification.schedule]));
+
+test('taken early: a daily 09:00 dose checked off at 08:00 has no alert today, and one-time alerts for the next 3 days', () => {
+  const { items } = desiredNotifications({ reminders: [takenToday(rem(1))], settings: SETTINGS, now: THU_8AM, random: () => 0 });
+  assert.deepEqual(scheduleBySlot(items, 1), {
+    0: { year: 2026, month: 11, day: 27, hour: 9, minute: 0 },
+    11: { year: 2026, month: 11, day: 28, hour: 9, minute: 0 },
+    12: { year: 2026, month: 11, day: 29, hour: 9, minute: 0 },
+  });
+});
+
+test('taken early: once today\'s time has passed, the repeating alert is back; not taken today, nothing changes', () => {
+  const after = desiredNotifications({ reminders: [takenToday(rem(1))], settings: SETTINGS, now: new Date(2026, 10, 26, 9, 30), random: () => 0 }).items;
+  assert.deepEqual(scheduleBySlot(after, 1), { 0: { hour: 9, minute: 0 } });
+  const notTaken = desiredNotifications({ reminders: [rem(1, { takenDate: '2026-11-25' })], settings: SETTINGS, now: THU_8AM, random: () => 0 }).items;
+  assert.deepEqual(scheduleBySlot(notTaken, 1), { 0: { hour: 9, minute: 0 } });
+});
+
+test('taken early: only today\'s weekday of a weekly reminder is bridged (3 weeks); its other days keep repeating', () => {
+  const monday8am = new Date(2026, 10, 23, 8, 0);
+  const r = weekly(1, [1, 3, 5], { takenDate: '2026-11-23' });
+  const { items } = desiredNotifications({ reminders: [r], settings: SETTINGS, now: monday8am, random: () => 0 });
+  assert.deepEqual(scheduleBySlot(items, 1), {
+    2: { year: 2026, month: 11, day: 30, hour: 9, minute: 0 },
+    4: { weekday: 4, hour: 9, minute: 0 },
+    6: { weekday: 6, hour: 9, minute: 0 },
+    11: { year: 2026, month: 12, day: 7, hour: 9, minute: 0 },
+    12: { year: 2026, month: 12, day: 14, hour: 9, minute: 0 },
+  });
+});
+
+test('taken early: monthly and one-time reminders are not bridged', () => {
+  const { items } = desiredNotifications({ reminders: [monthly(1, 26, { takenDate: '2026-11-26' })], settings: SETTINGS, now: THU_8AM, random: () => 0 });
+  assert.deepEqual(scheduleBySlot(items, 1), { 0: { day: 26, hour: 9, minute: 0 } });
+});
+
+test('taken early: reconcile swaps in the bridge, a second run changes nothing, and after 09:00 the repeating alert returns with no bridge left', async () => {
+  const plugin = fakePlugin();
+  const r = takenToday(rem(1));
+  await reconcile({ plugin, reminders: [r], settings: SETTINGS, now: THU_8AM, random: () => 0 });
+  assert.deepEqual(plugin.pendingIds(), [16, 16 + 11, 16 + 12]);
+  const again = await reconcile({ plugin, reminders: [r], settings: SETTINGS, now: THU_8AM, random: () => 0 });
+  assert.deepEqual(again.scheduled, []);
+  await reconcile({ plugin, reminders: [r], settings: SETTINGS, now: new Date(2026, 10, 26, 9, 30), random: () => 0 });
+  assert.deepEqual(plugin.pendingIds(), [16]);
+  assert.deepEqual(plugin.pending.get('16').schedule.on, { hour: 9, minute: 0 });
+});
+
+test('taken early: the bridge only uses room left in the budget, so it never pushes any reminder out', () => {
+  const others = (n) => Array.from({ length: n }, (_, i) => rem(i + 2));
+  const fit = (n) => fitAlertBudget(desiredNotifications({ reminders: [takenToday(rem(1)), ...others(n)], settings: SETTINGS, now: THU_8AM, random: () => 0 }).items);
+  const full = fit(ALERT_BUDGET - 1); // exactly the budget with plain alerts
+  assert.deepEqual(full.over, []);
+  assert.equal(full.items.length, ALERT_BUDGET);
+  assert.deepEqual(full.items.filter(i => i.reminderId === 1).map(i => i.notification.schedule.on), [{ hour: 9, minute: 0 }], 'no room: the plain repeating alert');
+  const roomy = fit(ALERT_BUDGET - 3); // 2 spare slots: the bridge fits
+  assert.deepEqual(roomy.over, []);
+  assert.deepEqual(roomy.items.filter(i => i.reminderId === 1).map(i => i.slot), [0, 11, 12]);
+});
+
+test('taken early: a bridge day that falls on spring-forward with a skipped time keeps a fixed instant (02:30 -> 03:30)', () => inZone('America/New_York', () => {
+  const r = rem(1, { time: '02:30', takenDate: '2027-03-13' });
+  const { items } = desiredNotifications({ reminders: [r], settings: SETTINGS, now: new Date(2027, 2, 13, 1, 0), random: () => 0 });
+  const main = items.find(i => i.slot === 0).notification.schedule;
+  assert.equal(main.on, undefined);
+  assert.deepEqual([main.at.getDate(), main.at.getHours(), main.at.getMinutes()], [14, 3, 30]);
+}));
 
 // ---- Never past iOS's 64 pending alerts, across a whole busy session ----
 test('the fake plugin notices going past 64 the way iOS would (silently)', async () => {
