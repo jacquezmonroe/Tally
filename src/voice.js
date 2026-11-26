@@ -32,6 +32,8 @@ export function extractExplicitTime(text) {
     const minute = minuteStr ? parseInt(minuteStr) : 0;
     // "at 30" or "at 9:75" is not a time: say nothing rather than invent one.
     if (hour > 23 || minute > 59) return null;
+    // 0 and 13-23 can only be 24-hour clock times, so they aren't vague.
+    if (hour === 0 || hour >= 13) return { hour, minute, matchedText: match[1] };
     return { hour, minute, matchedText: match[1], vague: true };
   }
   return null;

@@ -10,6 +10,7 @@ import {
   reminderCount,
   numberedNames,
   timeValue,
+  MAX_NAME_LENGTH,
 } from './understand.js';
 import { createIntelligence } from './index.js';
 
@@ -658,4 +659,20 @@ test('"every day" next to a weekday word in the title is daily, with no silent w
   const d = parse('buy Friday paper every day at 9 am');
   assert.equal(d.recurrence.type, 'daily');
   assert.equal(d.name, 'Buy Friday paper');
+});
+
+test('"at 0:30" is 00:30 with no am/pm question', () => {
+  const d = parse('take pills at 0:30');
+  assert.deepEqual(d.time, { hour: 0, minute: 30 });
+  assert.ok(!d.questions.some(q => q.id === 'ampm'));
+});
+
+test('a very long sentence gives a name within the 60-character field limit, cut at a word', () => {
+  const d = parse(`${'take the blue pill with water and food '.repeat(5)}at 9 am`);
+  assert.ok(d.name.length <= MAX_NAME_LENGTH, `name is ${d.name.length} characters`);
+  assert.ok(!/\s$/.test(d.name));
+  const said = new Set('take the blue pill with water and food'.split(' '));
+  assert.ok(d.name.toLowerCase().split(' ').every(w => said.has(w)), `cut inside a word: "${d.name}"`);
+  const ai = draftFromParts({ title: 'x'.repeat(90), timeText: '9 am' }, `${'x'.repeat(90)} at 9 am`, NOW);
+  assert.ok(!ai || ai.name.length <= MAX_NAME_LENGTH);
 });

@@ -162,3 +162,12 @@ test('a weekday that is itself the schedule still wins ("every Monday", "on Mond
   assert.deepEqual(parseVoiceInput('take pills on Monday at 9 am').recurrence.daysOfWeek, [1]);
   assert.deepEqual(parseVoiceInput('water plants every Monday at 9 am').recurrence.daysOfWeek, [1]);
 });
+
+// A bare "at H:MM" that can only be 24-hour time is not vague.
+test('"at 0:30", "at 13:30" and "at 21" are unambiguous 24-hour times', () => {
+  assert.deepEqual(extractExplicitTime('take pills at 0:30'), { hour: 0, minute: 30, matchedText: '0:30' });
+  assert.deepEqual(extractExplicitTime('take pills at 13:30'), { hour: 13, minute: 30, matchedText: '13:30' });
+  assert.deepEqual(extractExplicitTime('take pills at 21'), { hour: 21, minute: 0, matchedText: '21' });
+  assert.equal(extractExplicitTime('take pills at 8').vague, true); // 8 could be AM or PM
+  assert.equal(extractExplicitTime('take pills at 12:30').vague, true);
+});
