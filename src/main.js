@@ -505,7 +505,15 @@ async function refreshRecoveryNotice() {
 }
 
 async function saveReminders() {
-  await storage.saveReminders(reminders);
+  return storage.saveReminders(reminders);
+}
+
+// Checking off and un-marking: if it didn't reach storage, say so rather than
+// show a checkmark that will be gone after a relaunch.
+async function saveCheckOff() {
+  const saved = await saveReminders();
+  if (!saved.saved) showToast("Couldn't save that change. Check your storage and try again.");
+  return saved;
 }
 
 // ---- Personalization ----
@@ -935,7 +943,7 @@ async function markTakenFromNotification(reminderId) {
   } else if (decision.kind === 'credit_past') {
     const idx = reminders.findIndex(r => r.id === reminderId);
     reminders[idx] = creditPastDay(reminders[idx], decision.day, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
-    await saveReminders();
+    await saveCheckOff();
     render();
   }
 }
@@ -994,7 +1002,7 @@ async function toggleTaken(id) {
     return;
   }
   reminder.takenDate = null;
-  await saveReminders();
+  await saveCheckOff();
   syncAlerts(); // an un-marked one-time reminder needs its alert back
   render();
 }
@@ -1021,7 +1029,7 @@ async function completeReminder(id) {
       showToast(getStreakAcknowledgment(newStreak, userName));
     }
   }
-  await saveReminders();
+  await saveCheckOff();
   syncAlerts(); // done now, so a pending snooze is dropped and shouldn't ping later
   render();
   justTakenId = null;
