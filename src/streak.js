@@ -114,3 +114,28 @@ export function checkStaleStreaks(reminders, today = todayKey(), graceOccurrence
     return reminder;
   });
 }
+
+// ---- Checking off today, and un-marking it again ----
+// A check-off keeps a note of the streak as it was just before (streakUndo),
+// so un-marking the same day gives back exactly what the check-off added
+// instead of leaving the credit in place.
+export function takeToday(reminder, today = todayKey(), graceOccurrences = 1) {
+  const undo = { day: today, currentStreak: reminder.currentStreak, longestStreak: reminder.longestStreak, lastCompletedDate: reminder.lastCompletedDate };
+  return { ...markReminderTaken({ ...reminder, takenDate: today }, today, graceOccurrences), streakUndo: undo };
+}
+
+const isCount = v => Number.isSafeInteger(v) && v >= 0;
+const isDayOrNull = v => v === null || (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v));
+
+export function untakeToday(reminder, today = todayKey()) {
+  const { streakUndo: undo, ...rest } = reminder;
+  const out = { ...rest, takenDate: null };
+  const usable = undo && typeof undo === 'object' && undo.day === today && reminder.lastCompletedDate === today
+    && isCount(undo.currentStreak) && isCount(undo.longestStreak) && isDayOrNull(undo.lastCompletedDate);
+  if (usable) {
+    out.currentStreak = undo.currentStreak;
+    out.longestStreak = undo.longestStreak;
+    out.lastCompletedDate = undo.lastCompletedDate;
+  }
+  return out;
+}

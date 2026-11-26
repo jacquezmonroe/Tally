@@ -1,7 +1,7 @@
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Preferences } from '@capacitor/preferences';
 import { Badge } from '@capawesome/capacitor-badge';
-import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
+import { checkStaleStreaks, isOnGrace, isStreakEligible, todayKey, takeToday, untakeToday } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
 import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
 import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, msUntilNextLocalMidnight } from './due.js';
@@ -1001,7 +1001,7 @@ async function toggleTaken(id) {
     await completeReminder(id);
     return;
   }
-  reminder.takenDate = null;
+  reminders[reminders.indexOf(reminder)] = untakeToday(reminder, todayKey()); // gives back the streak credit too
   await saveCheckOff();
   syncAlerts(); // an un-marked one-time reminder needs its alert back
   render();
@@ -1018,8 +1018,7 @@ async function completeReminder(id) {
   const today = todayKey();
   const previousStreak = reminder.currentStreak;
   justTakenId = id;
-  reminder.takenDate = today;
-  reminders[idx] = markReminderTaken(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+  reminders[idx] = takeToday(reminder, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
   const newStreak = reminders[idx].currentStreak;
   if (newStreak > previousStreak) {
     justIncrementedStreakId = id; // real increment this session — the ring pops
