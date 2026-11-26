@@ -258,3 +258,12 @@ test('isOnGrace is always false for monthlyDate and once reminders', () => {
   assert.equal(isOnGrace(monthly, dateKey(base, 0)), false);
   assert.equal(isOnGrace(once, dateKey(base, 0)), false);
 });
+
+// ---- Time zone travel ----
+// Marked taken on Nov 26 in Tokyo, then flew to Honolulu where it is still
+// Nov 25: the last completion is "after" today. That is not a missed day.
+test('checkStaleStreaks: a last completion later than today (travel west) leaves the streak alone', () => {
+  const r = { id: 1, recurrence: { type: 'daily' }, takenDate: '2026-11-26', lastCompletedDate: '2026-11-26', currentStreak: 12, longestStreak: 12 };
+  assert.equal(checkStaleStreaks([r], '2026-11-25', 1)[0].currentStreak, 12);
+  assert.equal(checkStaleStreaks([r], '2026-11-25', 0)[0].currentStreak, 12);
+});

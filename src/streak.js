@@ -103,7 +103,9 @@ export function isOnGrace(reminder, today = todayKey(), graceOccurrences = 1) {
 export function checkStaleStreaks(reminders, today = todayKey(), graceOccurrences = 1) {
   return reminders.map(reminder => {
     if (!isStreakEligible(reminder)) return reminder;
-    if (!reminder.lastCompletedDate || reminder.lastCompletedDate === today) return reminder;
+    // Same day, or a completion "after" today (the phone moved to an earlier
+    // time zone): nothing has been missed, so the streak stands.
+    if (!reminder.lastCompletedDate || reminder.lastCompletedDate >= today) return reminder;
 
     const withinGrace = getGraceWindow(reminder, today, graceOccurrences).includes(reminder.lastCompletedDate);
     if (!withinGrace) {
