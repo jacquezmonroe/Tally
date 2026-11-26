@@ -38,14 +38,12 @@ export function isPendingToday(reminder, date = new Date()) {
   return appliesToday(reminder, date) && reminder.takenDate !== todayKey(date);
 }
 
-function toMinutes(hhmm) {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + m;
-}
-
+// The scheduled time is built as a real Date (like the alert's), so on a
+// spring-forward day a time in the skipped hour moves forward the same way.
 export function isOverdue(reminder, date = new Date()) {
   if (!isPendingToday(reminder, date)) return false;
-  return toMinutes(reminder.time) <= date.getHours() * 60 + date.getMinutes();
+  const [h, m] = reminder.time.split(':').map(Number);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m) <= date;
 }
 
 // Soonest first, so "the next one up" is always element 0.

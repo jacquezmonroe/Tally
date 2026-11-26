@@ -395,3 +395,22 @@ test('msUntilNextLocalMidnight: lands exactly on local midnight across both US D
     if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
   }
 });
+
+// ---- Overdue uses the same clock time the alert uses ----
+// On a spring-forward day 2:30 AM doesn't exist; JavaScript (and so the alert)
+// moves it to 3:30 AM. "Overdue" must not appear before the alert can fire.
+test('isOverdue: a 2:30 AM one-time reminder on spring-forward day is not overdue at 3:00, but is at 3:30', () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    const r = makeReminder({ time: '02:30', recurrence: { type: 'once', date: '2027-03-14' } });
+    assert.equal(isOverdue(r, new Date(2027, 2, 14, 3, 0)), false);
+    assert.equal(isOverdue(r, new Date(2027, 2, 14, 3, 30)), true);
+    // An ordinary day is unchanged: overdue from the scheduled minute on.
+    const d = makeReminder({ time: '09:00' });
+    assert.equal(isOverdue(d, new Date(2027, 2, 15, 8, 59)), false);
+    assert.equal(isOverdue(d, new Date(2027, 2, 15, 9, 0)), true);
+  } finally {
+    if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+  }
+});
