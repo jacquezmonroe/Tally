@@ -1059,6 +1059,12 @@ async function completeReminder(id) {
 
 const COMPLETE_LINGER_MS = 1400;
 
+// The ✕ on a row deletes with a single tap, so it asks first (swipe-then-tap
+// Delete is already two deliberate steps). Deleting also stops the alerts.
+function confirmDelete(reminder) {
+  return window.confirm(`Delete "${reminder.name}"? Its alerts will stop.`);
+}
+
 async function deleteReminder(id) {
   if (openSwipeId === id) openSwipeId = null;
   reportOutcome(await actions.remove(id));
@@ -1304,7 +1310,7 @@ function buildPastRow(reminder, kind) {
   `;
   item.querySelector('.check-btn').addEventListener('click', () => toggleTaken(reminder.id));
   item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
-  item.querySelector('.delete-btn').addEventListener('click', () => deleteReminder(reminder.id));
+  item.querySelector('.delete-btn').addEventListener('click', () => { if (confirmDelete(reminder)) deleteReminder(reminder.id); });
   return item;
 }
 
@@ -1423,7 +1429,7 @@ function render({ animateEntrance = false } = {}) {
     if (openSwipeId === reminder.id) item.style.transform = `translateX(-${SWIPE_ACTION_WIDTH}px)`;
     wireSwipe(row, item, reminder.id, cannotComplete);
     row.querySelector('.swipe-action').addEventListener('click', () => removeWithAnimation(row, reminder.id));
-    item.querySelector('.delete-btn').addEventListener('click', () => removeWithAnimation(row, reminder.id));
+    item.querySelector('.delete-btn').addEventListener('click', () => { if (confirmDelete(reminder)) removeWithAnimation(row, reminder.id); });
     node = row;
 
     if (animateEntrance) {
