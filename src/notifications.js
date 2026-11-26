@@ -157,11 +157,14 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
       continue;
     }
     const sound = soundFor(hour, minute, settings);
+    // The alert's own time: a Mark Taken press is counted against it, even if
+    // the reminder's time is edited after the alert fired (see resolveMarkTaken).
+    const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     for (const slot of slotsFor(reminder)) {
       const schedule = scheduleFor(reminder, slot, hour, minute, now);
       const fingerprint = fingerprintOf({
         v: SCHEME_VERSION, slot, name: reminder.name, userName: userName || '',
-        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge: 1, action: REMINDER_ACTION_TYPE_ID,
+        schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge: 1, action: REMINDER_ACTION_TYPE_ID, time,
       });
       items.push({
         id: notificationId(reminder.id, slot),
@@ -176,7 +179,7 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
           ...(sound ? { sound } : {}),
           badge: 1,
           actionTypeId: REMINDER_ACTION_TYPE_ID,
-          extra: { reminderId: reminder.id, fp: fingerprint },
+          extra: { reminderId: reminder.id, fp: fingerprint, time },
         },
       });
     }

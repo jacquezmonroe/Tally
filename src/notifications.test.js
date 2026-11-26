@@ -147,12 +147,14 @@ test('one-time: a time in the repeated fall-back hour is a normal calendar alert
   assert.deepEqual(schedule.on, { year: 2026, month: 11, day: 1, hour: 1, minute: 30 });
 }));
 
-test('every alert carries the title, badge, action button and its reminder id plus fingerprint', () => {
-  for (const { notification, reminderId, fingerprint } of desired([rem(8), weekly(9, [2])]).items) {
+test('every alert carries the title, badge, action button and its reminder id, fingerprint and own time', () => {
+  for (const { notification, reminderId, fingerprint } of desired([rem(8), weekly(9, [2], { time: '07:45' })]).items) {
     assert.equal(notification.title, 'Tickmark');
     assert.equal(notification.badge, 1);
     assert.equal(notification.actionTypeId, 'REMINDER');
-    assert.deepEqual(notification.extra, { reminderId, fp: fingerprint });
+    // The time lets a Mark Taken press on this alert be counted for the right
+    // day even if the reminder's time was edited after the alert fired.
+    assert.deepEqual(notification.extra, { reminderId, fp: fingerprint, time: reminderId === 8 ? '09:00' : '07:45' });
     assert.match(notification.body, /Task/);
   }
 });

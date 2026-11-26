@@ -187,3 +187,23 @@ test('a second launch does not overwrite the pre-reset streak with 0', () => {
   r = creditPastDay(r, '2026-11-24', 0);
   assert.equal(r.currentStreak, 11);
 });
+
+// ---- Mark Taken on an alert whose reminder was edited after it fired ----
+// Each alert carries the time it was scheduled for (extra.time). A press is
+// counted against THAT time, not the reminder's current one.
+test('Mark Taken on a main alert carries the alert\'s own time; a snooze or a bad time carries none', () => {
+  assert.deepEqual(classifyNotificationAction(event(MARK_TAKEN_ACTION_ID, { reminderId: 7, fp: 'abc', time: '09:00' })), { kind: 'mark_taken', reminderId: 7, alertTime: '09:00' });
+  assert.deepEqual(classifyNotificationAction(event(MARK_TAKEN_ACTION_ID, { reminderId: 7, fp: 'abc', time: '9am' })), { kind: 'mark_taken', reminderId: 7 });
+  assert.deepEqual(classifyNotificationAction({ actionId: MARK_TAKEN_ACTION_ID, notification: { id: 120, extra: { reminderId: 7, fp: 'snooze', day: '2026-11-26', time: '09:00' } } }),
+    { kind: 'mark_taken', reminderId: 7, snoozeDay: '2026-11-26' });
+});
+
+test('Mark Taken on today\'s 09:00 alert, pressed after the time was edited to 20:00, completes today', () => {
+  const r = pill({ time: '20:00', takenDate: '2026-11-25', lastCompletedDate: '2026-11-25' });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 9, 30), { alertTime: '09:00' }), { kind: 'complete_today' });
+});
+
+test('Mark Taken on yesterday\'s 20:00 alert, pressed after the time was edited to 08:00, credits yesterday, not today', () => {
+  const r = pill({ time: '08:00', takenDate: '2026-11-24', lastCompletedDate: '2026-11-24' });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 9, 30), { alertTime: '20:00' }), { kind: 'credit_past', day: '2026-11-25' });
+});

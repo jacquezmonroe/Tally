@@ -952,9 +952,9 @@ async function highlightFromNotification(reminderId) {
 // which day it counts for: today goes through completeReminder(), the very
 // function the in-app check-off uses; an earlier day is credited to that day
 // only, so today's dose is never marked taken by yesterday's press.
-async function markTakenFromNotification(reminderId, snoozeDay = null) {
+async function markTakenFromNotification(reminderId, snoozeDay = null, alertTime = null) {
   await appReady;
-  const decision = resolveMarkTaken(reminders.find(r => r.id === reminderId), new Date(), { snoozeDay });
+  const decision = resolveMarkTaken(reminders.find(r => r.id === reminderId), new Date(), { snoozeDay, alertTime });
   if (decision.kind === 'complete_today') {
     await completeReminder(reminderId);
   } else if (decision.kind === 'credit_past') {
@@ -971,7 +971,7 @@ async function markTakenFromNotification(reminderId, snoozeDay = null) {
 // Pressing its "Mark Taken" button marks it done instead (see above).
 LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
   const route = classifyNotificationAction(action);
-  if (route.kind === 'mark_taken') markTakenFromNotification(route.reminderId, route.snoozeDay);
+  if (route.kind === 'mark_taken') markTakenFromNotification(route.reminderId, route.snoozeDay, route.alertTime);
   else if (route.kind === 'open') highlightFromNotification(route.reminderId);
 }).catch(() => {
   // Not running in the native shell (plain browser preview).

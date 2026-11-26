@@ -41,7 +41,10 @@ export function classifyNotificationAction(action) {
     // A snooze alert records the day it belongs to (see buildSnooze).
     const extra = action.notification.extra;
     const snoozeDay = extra.fp === 'snooze' && typeof extra.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(extra.day) ? extra.day : null;
-    return snoozeDay ? { kind: 'mark_taken', reminderId, snoozeDay } : { kind: 'mark_taken', reminderId };
+    if (snoozeDay) return { kind: 'mark_taken', reminderId, snoozeDay };
+    // Any other alert records the time it was scheduled for (see desiredNotifications).
+    const alertTime = typeof extra.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(extra.time) ? extra.time : null;
+    return alertTime ? { kind: 'mark_taken', reminderId, alertTime } : { kind: 'mark_taken', reminderId };
   }
   if (action.actionId === 'tap') return { kind: 'open', reminderId };
   return { kind: 'ignore', reminderId };
@@ -72,14 +75,18 @@ function latestOccurrenceKey(reminder, now) {
 // A press on a snooze alert passes the snooze's own day (snoozeDay): a snooze
 // can fire before the reminder's time, when "the latest scheduled time" would
 // still be yesterday. A snoozeDay after today is not trusted.
+// Any other alert passes the time it was scheduled for (alertTime), which is
+// used instead of the reminder's time: the reminder may have been edited
+// since the alert fired.
 // -> { kind: 'ignore' } | { kind: 'complete_today' } | { kind: 'credit_past', day }
-export function resolveMarkTaken(reminder, now = new Date(), { snoozeDay = null } = {}) {
+export function resolveMarkTaken(reminder, now = new Date(), { snoozeDay = null, alertTime = null } = {}) {
   if (!reminder) return { kind: 'ignore' };
   if (reminder.recurrence && reminder.recurrence.type === 'once') {
     return (appliesToday(reminder, now) || isOverdueOneTime(reminder, now)) && !isFinished(reminder, now)
       ? { kind: 'complete_today' } : { kind: 'ignore' };
   }
-  const day = snoozeDay && snoozeDay <= todayKey(now) ? snoozeDay : latestOccurrenceKey(reminder, now);
+  const day = snoozeDay && snoozeDay <= todayKey(now) ? snoozeDay
+    : latestOccurrenceKey(alertTime ? { ...reminder, time: alertTime } : reminder, now);
   if (day === null) return { kind: 'ignore' };
   if (day === todayKey(now)) return isFinished(reminder, now) ? { kind: 'ignore' } : { kind: 'complete_today' };
   const alreadyCounted = (reminder.takenDate && reminder.takenDate >= day) || (reminder.lastCompletedDate && reminder.lastCompletedDate >= day);
