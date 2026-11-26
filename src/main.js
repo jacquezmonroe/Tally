@@ -1002,11 +1002,13 @@ async function addReminder(name, time, recurrence, color, notes, subtasks = [], 
   const outcome = await actions.add({ name, time, recurrence, color, notes, subtasks, importance });
   if (outcome.error === 'ids_exhausted') {
     showToast("Can't add more reminders: the app has run out of reminder numbers.");
-    return;
+    return false;
   }
   reportOutcome(outcome);
+  if (!outcome.saved.saved) return false; // not added: keep the form so nothing typed is lost
   // Show the tab the new reminder lives on, so it doesn't seem to vanish.
   setView(appliesToday(outcome.reminder) ? 'today' : 'upcoming');
+  return true;
 }
 
 // The in-app check-off: tapping the circle, swiping, and "Mark complete" all
@@ -1065,10 +1067,12 @@ async function deleteReminder(id) {
 
 async function updateReminder(id, name, time, recurrence, color, notes, importance = 'normal') {
   const outcome = await actions.update(id, { name, time, recurrence, color, notes, importance });
-  if (outcome.error) return;
+  if (outcome.error) return false;
   reportOutcome(outcome);
+  if (!outcome.saved.saved) return false; // not changed: keep the form so the edit isn't lost
   editingId = null;
   render();
+  return true;
 }
 
 // ---- Streak ring + swipe-to-delete ----
@@ -1471,16 +1475,19 @@ addForm.addEventListener('submit', async (e) => {
   const importance = importanceInput.value;
   // "Add three job applications..." was confirmed as separate reminders or as
   // one reminder with steps; everything else is a single reminder.
+  let added = true;
   if (understanding && understanding.count > 1 && understanding.countMode === 'steps') {
-    await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)), importance);
+    added = await addReminder(name, time, recurrence, color, notes, appendSubtasks([], numberedNames(name, understanding.count)), importance);
   } else if (understanding && reminderCount(understanding) > 1) {
     for (const numbered of numberedNames(name, understanding.count)) {
-      await addReminder(numbered, time, recurrence, color, notes, [], importance);
+      added = await addReminder(numbered, time, recurrence, color, notes, [], importance);
+      if (!added) break;
     }
   } else {
-    await addReminder(name, time, recurrence, color, notes, [], importance);
+    added = await addReminder(name, time, recurrence, color, notes, [], importance);
   }
-  closeScreen(addScreen);
+  if (added) closeScreen(addScreen);
+  else render(); // the list shows only what was really saved
 });
 
 // ---- Describe it (Understand Reminder) ----
@@ -1865,7 +1872,7 @@ editForm.addEventListener('submit', async (e) => {
   const time = editTimeInput.value;
   const recurrence = readRecurrenceFromForm(editForm);
   if (!name || !time || !recurrence || editingId === null) return;
-  await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value);
+  if (!(await updateReminder(editingId, name, time, recurrence, readColorFromContainer(editColorFieldsEl), editNotesInput.value.trim(), editImportanceInput.value))) return;
   if (detailId !== null) renderDetail(); // refresh it before Back reveals it
   closeEdit();
 });
