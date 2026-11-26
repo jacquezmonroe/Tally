@@ -10,6 +10,7 @@ import { createReminderStorage } from './storage.js';
 import { createNotifier, notificationId } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
 import { fakePlugin, fakePrefs } from './notifications.fake.js';
+import { isUpcoming, isPendingToday } from './due.js';
 
 const KEYS = { reminders: 'tally-reminders', nextId: 'tally-next-id' };
 const NOW = new Date(2026, 9, 31, 14, 0);
@@ -272,4 +273,38 @@ test('lifecycle: add, edit, fail, retry, delete: the phone and the saved data al
   await t.actions.remove(b.reminder.id);
   assert.deepEqual(t.plugin.pendingIds(), [notificationId(1, 5), notificationId(1, 6)]);
   assert.deepEqual(t.stored().map(r => r.name), ['Take vitamins']);
+});
+
+// ---- Editing into a one-time reminder ----
+// A one-time reminder counts as finished once it has any takenDate, so a
+// takenDate carried over from its old schedule must not make it look done.
+
+test('update: a reminder taken today, changed to a one-time reminder on a later day, is upcoming and alerts', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today, currentStreak: 3, longestStreak: 3, lastCompletedDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: '2026-11-05' } }));
+  assert.equal(r.reminder.takenDate, null);
+  assert.ok(isUpcoming(r.reminder, NOW));
+  assert.ok(isPendingToday(r.reminder, new Date(2026, 10, 5, 8, 0)));
+  assert.equal(t.plugin.pendingIds().length, 1);
+});
+
+test('update: a reminder taken today, changed to a one-time reminder for today, stays done (no second dose)', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: today } }));
+  assert.equal(r.reminder.takenDate, today);
+});
+
+test('update: editing a recurring reminder taken today keeps it taken today', async () => {
+  const today = '2026-10-31';
+  const t = setup({ reminders: [{ id: 1, ...fields(), takenDate: today }], nextId: 2 });
+  const r = await t.actions.update(1, weeklyFields([6], { time: '10:00' }));
+  assert.equal(r.reminder.takenDate, today);
+});
+
+test('update: moving a completed one-time reminder to a new later date makes it pending again', async () => {
+  const t = setup({ reminders: [{ id: 1, ...fields({ recurrence: { type: 'once', date: '2026-10-30' } }), takenDate: '2026-10-30' }], nextId: 2 });
+  const r = await t.actions.update(1, fields({ recurrence: { type: 'once', date: '2026-11-02' } }));
+  assert.equal(r.reminder.takenDate, null);
 });

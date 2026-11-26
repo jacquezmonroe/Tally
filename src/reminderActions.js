@@ -59,6 +59,9 @@ export function createReminderActions({ state, storage, notifier }) {
       reminder.name = name;
       reminder.time = time;
       reminder.recurrence = recurrence;
+      // A one-time reminder counts as finished once it has any takenDate, so a
+      // completion from before its (new) date must not carry over and hide it.
+      if (recurrence && recurrence.type === 'once' && reminder.takenDate && reminder.takenDate < recurrence.date) reminder.takenDate = null;
       reminder.color = color;
       reminder.notes = notes;
       const level = normalizeImportance(importance);
