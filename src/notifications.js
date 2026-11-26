@@ -382,10 +382,16 @@ export async function ensureSchemeMigrated({ plugin, prefs }) {
 export function createNotifier({ plugin, prefs, getReminders, getSettings, getUserName, now = () => new Date(), random = Math.random }) {
   let running = null;
   let queued = null;
+  let migrating = null; // the one-time upgrade cleanup, once started
 
-  const runOnce = () => reconcile({
-    plugin, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), random,
-  });
+  // Waits for the upgrade cleanup first: it cancels every pending alert, so it
+  // must never run alongside a reconcile.
+  const runOnce = async () => {
+    if (migrating) await migrating;
+    return reconcile({
+      plugin, reminders: getReminders(), settings: getSettings(), userName: getUserName(), now: now(), random,
+    });
+  };
 
   function reconcileNow() {
     if (!running) {
@@ -419,7 +425,14 @@ export function createNotifier({ plugin, prefs, getReminders, getSettings, getUs
       }
     },
 
-    // Runs the one-time upgrade cleanup. Call before the first reconcile.
-    migrate: () => ensureSchemeMigrated({ plugin, prefs }),
+    // Runs the one-time upgrade cleanup, after any reconcile already running;
+    // reconciles asked for meanwhile wait for it. Call before the first reconcile.
+    migrate() {
+      if (!migrating) {
+        const busy = running ? running.catch(() => {}) : Promise.resolve();
+        migrating = busy.then(() => ensureSchemeMigrated({ plugin, prefs }));
+      }
+      return migrating;
+    },
   };
 }

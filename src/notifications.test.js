@@ -703,3 +703,30 @@ test('snooze: a Saturday-only reminder snoozed past midnight still fires early S
   const plan2 = planChanges({ desired: [], pending, reminders: [{ ...sat, takenDate: '2026-10-31' }], now: new Date(2026, 10, 1, 0, 2) });
   assert.deepEqual(plan2.toCancel, [snooze.id]);
 });
+
+// ---- The one-time upgrade cleanup never overlaps a reconcile ----
+// It cancels every pending alert, so overlapping a reconcile could remove
+// alerts that reconcile had just scheduled (e.g. a resume during launch).
+function notifierFor(plugin, reminders, prefs = fakePrefs()) {
+  return createNotifier({ plugin, prefs, getReminders: () => reminders, getSettings: () => SETTINGS, getUserName: () => null, now: () => NOW, random: () => 0 });
+}
+
+test('migrate while a reconcile is running: waits for it, never overlapping', async () => {
+  const plugin = fakePlugin();
+  plugin.pending.set('300', { id: 300, title: 'old', body: 'old', extra: {}, schedule: { on: { hour: 8, minute: 0 } } }); // old-scheme alert
+  const n = notifierFor(plugin, [rem(1)]);
+  const r = n.reconcile();
+  const m = n.migrate();
+  await Promise.all([r, m]);
+  assert.equal(plugin.maxActive, 1, 'plugin calls overlapped');
+});
+
+test('reconcile asked for while migrating: runs after it, so the cleanup cannot remove its alerts', async () => {
+  const plugin = fakePlugin();
+  const n = notifierFor(plugin, [rem(1)]);
+  const m = n.migrate();
+  const r = n.reconcile();
+  await Promise.all([m, r]);
+  assert.equal(plugin.maxActive, 1, 'plugin calls overlapped');
+  assert.deepEqual(plugin.pendingIds(), [notificationId(1, SLOT_MAIN)]);
+});
