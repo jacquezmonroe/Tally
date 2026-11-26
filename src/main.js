@@ -4,7 +4,7 @@ import { Badge } from '@capawesome/capacitor-badge';
 import { markReminderTaken, checkStaleStreaks, isOnGrace, isStreakEligible, todayKey } from './streak.js';
 import { isVoiceAvailable, ensureVoicePermissions, startListening } from './voiceInput.js';
 import { getContextualGreeting, getEmptyStateMessage, isStreakMilestone, getMilestoneMessage, isStreakAcknowledgment, getStreakAcknowledgment, getStreakResetMessage } from './personalization.js';
-import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished } from './due.js';
+import { getPendingToday, countBadge, isAllDoneToday, appliesToday, filterForView, nextOccurrence, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, msUntilNextLocalMidnight } from './due.js';
 import {
   ringProgress,
   ringDashOffset,
@@ -2182,6 +2182,33 @@ planDiscardBtn.addEventListener('click', async () => {
   showToast('Saved plan discarded');
 });
 
+// ---- A new day while the app is open or in the background ----
+// Launch runs the stale-streak check; a new day that starts while the app is
+// open (midnight) or suspended (resume) needs the same, or the streak count,
+// Today list, Overdue and badge stay on yesterday until a relaunch.
+let currentDay = null;
+let midnightTimer = null;
+
+async function refreshForNewDay() {
+  const today = todayKey();
+  if (currentDay === null || today === currentDay) return;
+  currentDay = today;
+  reminders = checkStaleStreaks(reminders, today, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+  await saveReminders();
+  render();
+  updateBadge();
+}
+
+// Timers don't run while iOS has the app suspended; resume covers that case.
+function armMidnightTimer() {
+  clearTimeout(midnightTimer);
+  midnightTimer = setTimeout(async () => {
+    await refreshForNewDay();
+    syncAlerts();
+    armMidnightTimer();
+  }, msUntilNextLocalMidnight() + 1000);
+}
+
 // ---- Init ----
 async function init() {
   // Theme is applied first, before anything renders, to avoid a flash of
@@ -2205,6 +2232,7 @@ async function init() {
   const graceOccurrences = graceOccurrencesForHours(reminderDefaults.gracePeriodHours);
   const previousStreaks = new Map(reminders.map(r => [r.id, r.currentStreak]));
   reminders = checkStaleStreaks(reminders, todayKey(), graceOccurrences);
+  currentDay = todayKey();
   // One toast for the launch, even if several reminders' streaks broke while
   // the app was closed — this is meant to be a gentle nudge, not a list.
   const anyStreakReset = reminders.some(r => previousStreaks.get(r.id) > 0 && r.currentStreak === 0);
@@ -2220,6 +2248,7 @@ async function init() {
   // after that only fixes whatever differs.
   await notifier.migrate();
   await syncAlerts();
+  armMidnightTimer();
   micBtn.hidden = !(await isVoiceAvailable());
 
   const { value: onboarded } = await Preferences.get({ key: ONBOARDED_KEY });
@@ -2240,7 +2269,11 @@ document.addEventListener('visibilitychange', () => {
     lastBadgeCount = null;
     render();
     // The user may have changed the notification permission in iOS Settings.
-    appReady.then(() => syncAlerts());
+    appReady.then(async () => {
+      await refreshForNewDay();
+      armMidnightTimer(); // re-aimed, since it may have been paused while suspended
+      syncAlerts();
+    });
   }
 });
 

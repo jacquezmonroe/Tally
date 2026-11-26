@@ -187,3 +187,9 @@ export function isAllDoneToday(reminders, date = new Date()) {
   const todayStr = todayKey(date);
   return relevantToday.every(r => r.takenDate === todayStr);
 }
+
+// Milliseconds until the next local midnight, measured on the wall clock (so a
+// 23- or 25-hour day around a DST change still lands on 00:00).
+export function msUntilNextLocalMidnight(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, countBadge } from './due.js';
+import { appliesToday, isPendingToday, isOverdue, isExpiredOneTime, getPendingToday, countOverdue, isAllDoneToday, nextOccurrence, isUpcoming, isDoneToday, filterForView, describeDay, isOverdueOneTime, isCompletedOneTime, getOverdueOneTime, getCompletedOneTime, oneTimeDay, dateFromKey, isFinished, countBadge, msUntilNextLocalMidnight } from './due.js';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { todayKey } from './streak.js';
@@ -373,4 +373,25 @@ test('monthly 31st occurs in all 12 months', () => {
   let cursor = new Date(2026, 11, 31);
   for (let i = 0; i < 12; i++) { cursor = nextOccurrence(r, cursor); months.add(cursor.getMonth()); }
   assert.equal(months.size, 12);
+});
+
+// ---- When the next day starts (for refreshing an app left open) ----
+
+test('msUntilNextLocalMidnight: ordinary evening', () => {
+  assert.equal(msUntilNextLocalMidnight(new Date(2026, 10, 25, 23, 0, 0)), 3600000);
+  assert.equal(msUntilNextLocalMidnight(new Date(2026, 10, 25, 0, 0, 0)), 24 * 3600000);
+});
+
+test('msUntilNextLocalMidnight: lands exactly on local midnight across both US DST changes', () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    for (const start of [new Date(2027, 2, 14, 0, 30), new Date(2026, 10, 1, 0, 30), new Date(2027, 2, 13, 22, 0)]) {
+      const next = new Date(start.getTime() + msUntilNextLocalMidnight(start));
+      assert.deepEqual([next.getHours(), next.getMinutes()], [0, 0]);
+      assert.equal(next.getDate(), new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getDate());
+    }
+  } finally {
+    if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+  }
 });
