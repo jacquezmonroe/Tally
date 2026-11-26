@@ -1301,12 +1301,12 @@ function buildPastRow(reminder, kind) {
   item.className = 'reminder-item past-row' + (finished ? ' taken' : '');
   item.dataset.reminderId = reminder.id;
   item.innerHTML = `
-    <button class="check-btn" aria-label="${finished ? 'Mark not taken' : 'Mark taken'}">${finished ? checkSvg(false) : ''}</button>
+    <button class="check-btn" aria-label="${finished ? 'Mark not taken' : 'Mark taken'}: ${escapeAttr(reminder.name)}">${finished ? checkSvg(false) : ''}</button>
     <div class="reminder-info">
       <span class="reminder-name">${escapeHtml(reminder.name)}</span>
       <span class="reminder-time">${dayLabel}</span>
     </div>
-    <button class="delete-btn" aria-label="Delete">✕</button>
+    <button class="delete-btn" aria-label="Delete ${escapeAttr(reminder.name)}">✕</button>
   `;
   item.querySelector('.check-btn').addEventListener('click', () => toggleTaken(reminder.id));
   item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
@@ -1399,7 +1399,7 @@ function render({ animateEntrance = false } = {}) {
     // calendar mark stands in for the checkbox and the label leads with the day.
     const leading = upcoming
       ? '<span class="upcoming-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/></svg></span>'
-      : `<button class="check-btn" aria-label="${taken ? 'Mark not taken' : 'Mark taken'}">${taken ? checkSvg(justTakenId === reminder.id) : ''}</button>`;
+      : `<button class="check-btn" aria-label="${taken ? 'Mark not taken' : 'Mark taken'}: ${escapeAttr(reminder.name)}">${taken ? checkSvg(justTakenId === reminder.id) : ''}</button>`;
     const timeLabel = upcoming
       ? `${describeDay(nextOccurrence(reminder))} · ${formatTime(reminder.time)}`
       : `${formatTime(reminder.time)}${recurrenceLabel ? ` · ${recurrenceLabel}` : ''}`;
@@ -1411,7 +1411,7 @@ function render({ animateEntrance = false } = {}) {
         ${alertBadges.has(reminder.id) ? `<span class="alert-badge">${alertBadgeText(alertBadges.get(reminder.id))}</span>` : ''}
       </div>
       ${streakRing}
-      <button class="delete-btn" aria-label="Delete">✕</button>
+      <button class="delete-btn" aria-label="Delete ${escapeAttr(reminder.name)}">✕</button>
     `;
     item.querySelector('.check-btn')?.addEventListener('click', () => toggleTaken(reminder.id));
     item.querySelector('.reminder-info').addEventListener('click', () => openDetail(reminder.id));
@@ -1424,7 +1424,7 @@ function render({ animateEntrance = false } = {}) {
     row.dataset.reminderId = reminder.id;
     const cannotComplete = taken || upcoming;
     row.innerHTML = (cannotComplete ? '' : `<div class="swipe-complete" aria-hidden="true">${completeSvg()}</div>`)
-      + '<button type="button" class="swipe-action" aria-label="Delete reminder">Delete</button>';
+      + `<button type="button" class="swipe-action" aria-label="Delete ${escapeAttr(reminder.name)}">Delete</button>`;
     row.appendChild(item);
     if (openSwipeId === reminder.id) item.style.transform = `translateX(-${SWIPE_ACTION_WIDTH}px)`;
     wireSwipe(row, item, reminder.id, cannotComplete);
