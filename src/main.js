@@ -65,7 +65,7 @@ import {
   discardReviewItem,
   approvedSteps,
 } from './subtasks.js';
-import { classifyNotificationAction } from './notificationActions.js';
+import { classifyNotificationAction, resolveMarkTaken, creditPastDay } from './notificationActions.js';
 import { createReminderStorage, parseQuietHours, parseReminderDefaults, describeNotice } from './storage.js';
 import { createNotifier, SNOOZE_MINUTES } from './notifications.js';
 import { createReminderActions } from './reminderActions.js';
@@ -921,18 +921,23 @@ async function highlightFromNotification(reminderId) {
   setTimeout(() => target.classList.remove('notif-highlight'), NOTIF_HIGHLIGHT_MS);
 }
 
-// "Mark Taken" pressed on a notification. Uses completeReminder(), the very
-// function the in-app check-off uses, so the streak and grace-period rules are
-// not repeated here. It never un-takes: an already-done reminder (a double
-// press, or a late duplicate) is left alone, and so is one that is not due
-// today, which the app itself would not let you check off either.
+// "Mark Taken" pressed on a notification. It never un-takes: an already-done
+// reminder (a double press, or a late duplicate) is left alone. iOS may hand
+// the press over late (e.g. the next morning), so resolveMarkTaken decides
+// which day it counts for: today goes through completeReminder(), the very
+// function the in-app check-off uses; an earlier day is credited to that day
+// only, so today's dose is never marked taken by yesterday's press.
 async function markTakenFromNotification(reminderId) {
   await appReady;
-  const reminder = reminders.find(r => r.id === reminderId);
-  // A one-time reminder from an earlier day can still be marked taken (it is
-  // listed under Overdue); a recurring one only on a day it applies.
-  if (!reminder || !(appliesToday(reminder) || isOverdueOneTime(reminder)) || isFinished(reminder)) return;
-  await completeReminder(reminderId);
+  const decision = resolveMarkTaken(reminders.find(r => r.id === reminderId));
+  if (decision.kind === 'complete_today') {
+    await completeReminder(reminderId);
+  } else if (decision.kind === 'credit_past') {
+    const idx = reminders.findIndex(r => r.id === reminderId);
+    reminders[idx] = creditPastDay(reminders[idx], decision.day, graceOccurrencesForHours(reminderDefaults.gracePeriodHours));
+    await saveReminders();
+    render();
+  }
 }
 
 // Tapping a delivered notification opens the app (default Capacitor
