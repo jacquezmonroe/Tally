@@ -37,7 +37,12 @@ function reminderIdOf(action) {
 export function classifyNotificationAction(action) {
   const reminderId = reminderIdOf(action);
   if (reminderId === null) return { kind: 'ignore', reminderId: null };
-  if (action.actionId === MARK_TAKEN_ACTION_ID) return { kind: 'mark_taken', reminderId };
+  if (action.actionId === MARK_TAKEN_ACTION_ID) {
+    // A snooze alert records the day it belongs to (see buildSnooze).
+    const extra = action.notification.extra;
+    const snoozeDay = extra.fp === 'snooze' && typeof extra.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(extra.day) ? extra.day : null;
+    return snoozeDay ? { kind: 'mark_taken', reminderId, snoozeDay } : { kind: 'mark_taken', reminderId };
+  }
   if (action.actionId === 'tap') return { kind: 'open', reminderId };
   return { kind: 'ignore', reminderId };
 }
@@ -64,14 +69,17 @@ function latestOccurrenceKey(reminder, now) {
   return null;
 }
 
+// A press on a snooze alert passes the snooze's own day (snoozeDay): a snooze
+// can fire before the reminder's time, when "the latest scheduled time" would
+// still be yesterday. A snoozeDay after today is not trusted.
 // -> { kind: 'ignore' } | { kind: 'complete_today' } | { kind: 'credit_past', day }
-export function resolveMarkTaken(reminder, now = new Date()) {
+export function resolveMarkTaken(reminder, now = new Date(), { snoozeDay = null } = {}) {
   if (!reminder) return { kind: 'ignore' };
   if (reminder.recurrence && reminder.recurrence.type === 'once') {
     return (appliesToday(reminder, now) || isOverdueOneTime(reminder, now)) && !isFinished(reminder, now)
       ? { kind: 'complete_today' } : { kind: 'ignore' };
   }
-  const day = latestOccurrenceKey(reminder, now);
+  const day = snoozeDay && snoozeDay <= todayKey(now) ? snoozeDay : latestOccurrenceKey(reminder, now);
   if (day === null) return { kind: 'ignore' };
   if (day === todayKey(now)) return isFinished(reminder, now) ? { kind: 'ignore' } : { kind: 'complete_today' };
   const alreadyCounted = (reminder.takenDate && reminder.takenDate >= day) || (reminder.lastCompletedDate && reminder.lastCompletedDate >= day);

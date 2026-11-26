@@ -112,3 +112,41 @@ test('creditPastDay: never overwrites a later takenDate (today\'s dose stays tak
   const r = pill({ takenDate: '2026-11-25', lastCompletedDate: '2026-11-22', currentStreak: 3, longestStreak: 3 });
   assert.equal(creditPastDay(r, '2026-11-24', 1).takenDate, '2026-11-25');
 });
+
+// ---- Mark Taken on a snooze alert ----
+// Snooze is offered for any reminder due today and not done, including before
+// its time. The snooze alert records the day it belongs to (extra.day), and
+// that day decides which day the press counts for.
+const snoozeEvent = (day, fp = 'snooze') => ({ actionId: MARK_TAKEN_ACTION_ID, notification: { id: 7 * 16 + 8, extra: { reminderId: 7, fp, day } } });
+
+test('Mark Taken on a snooze carries the snooze\'s day; a main alert carries none', () => {
+  assert.deepEqual(classifyNotificationAction(snoozeEvent('2026-11-26')), { kind: 'mark_taken', reminderId: 7, snoozeDay: '2026-11-26' });
+  assert.deepEqual(classifyNotificationAction(event(MARK_TAKEN_ACTION_ID, { reminderId: 7, fp: 'abc', day: '2026-11-26' })), { kind: 'mark_taken', reminderId: 7 });
+  assert.deepEqual(classifyNotificationAction(snoozeEvent('not a day')), { kind: 'mark_taken', reminderId: 7 });
+});
+
+test('Mark Taken on a snooze fired before the reminder\'s time completes today (yesterday taken)', () => {
+  const r = pill({ takenDate: '2026-11-25', lastCompletedDate: '2026-11-25', currentStreak: 3, longestStreak: 3 });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10), { snoozeDay: '2026-11-26' }), { kind: 'complete_today' });
+});
+
+test('Mark Taken on a snooze fired before the reminder\'s time completes today, not yesterday (yesterday missed)', () => {
+  const r = pill({ takenDate: '2026-11-24', lastCompletedDate: '2026-11-24' });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10), { snoozeDay: '2026-11-26' }), { kind: 'complete_today' });
+});
+
+test('Mark Taken on a snooze from yesterday, handled today, credits yesterday', () => {
+  const r = pill({ time: '23:50', takenDate: '2026-11-24', lastCompletedDate: '2026-11-24' });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 0, 5), { snoozeDay: '2026-11-25' }), { kind: 'credit_past', day: '2026-11-25' });
+});
+
+test('Mark Taken on a snooze for a day already done is ignored', () => {
+  const now = new Date(2026, 10, 26, 7, 10);
+  assert.deepEqual(resolveMarkTaken(pill({ takenDate: '2026-11-26', lastCompletedDate: '2026-11-26' }), now, { snoozeDay: '2026-11-26' }), { kind: 'ignore' });
+  assert.deepEqual(resolveMarkTaken(pill({ takenDate: '2026-11-26', lastCompletedDate: '2026-11-26' }), now, { snoozeDay: '2026-11-25' }), { kind: 'ignore' });
+});
+
+test('Mark Taken on a snooze dated in the future is treated like a plain press', () => {
+  const r = pill({ takenDate: '2026-11-25', lastCompletedDate: '2026-11-25' });
+  assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10), { snoozeDay: '2026-11-27' }), resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10)));
+});
