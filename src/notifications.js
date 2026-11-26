@@ -14,7 +14,8 @@
 //   slots 1 to 7  weekly alerts: slot = weekday + 1 (Sunday 1 ... Saturday 7),
 //                 which also happens to be the plugin's own weekday number
 //   slot 8        snooze
-//   slots 9 to 15 reserved
+//   slot 9        monthly on the 29th-31st: the occurrence after the one in slot 0
+//   slots 10 to 15 reserved
 // Every (reminder, kind of alert) pair gets its own id, so ids can never
 // collide (the old scheme gave a weekly alert id*100+weekday, which equals
 // another reminder's plain id once ids reach 100). Reminder ids are capped at
@@ -34,7 +35,7 @@
 // Quiet hours: the alert still arrives on time, silently (no `sound`).
 
 import { getNotificationBody } from './personalization.js';
-import { isExpiredOneTime } from './due.js';
+import { isExpiredOneTime, appliesToday } from './due.js';
 import { isWithinQuietHours } from './settings.js';
 import { todayKey } from './streak.js';
 import { reminderActionTypes, REMINDER_ACTION_TYPE_ID } from './notificationActions.js';
@@ -43,6 +44,7 @@ import { MAX_REMINDER_ID } from './storage.js';
 export const ALERT_TITLE = 'Tickmark';
 export const SLOT_MAIN = 0;
 export const SLOT_SNOOZE = 8;
+export const SLOT_MONTHLY_NEXT = 9;
 export const SLOTS_PER_REMINDER = 16;
 export const SCHEME_VERSION = 2;
 export const SCHEME_KEY = 'tally-notification-scheme';
@@ -92,9 +94,27 @@ const fingerprintOf = (parts) => {
 // ---- Building the alerts that should exist ----
 const parseTime = (time) => time.split(':').map(Number);
 
-function scheduleFor(reminder, slot, hour, minute) {
+// iOS can only repeat "day N of every month", which silently skips months
+// without that day. So the 29th-31st (which fall back to a short month's last
+// day, see appliesToday) get one-time alerts for their next two occurrences
+// instead; every reconcile (launch, resume, any change) moves them forward.
+const isMonthEnd = (rec) => rec.type === 'monthlyDate' && rec.dayOfMonth > 28;
+
+function nextMonthEndTimes(reminder, hour, minute, now, count = 2) {
+  const times = [];
+  for (let i = 0; i <= 93 && times.length < count; i++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    if (!appliesToday(reminder, day)) continue;
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
+    if (at > now) times.push(at);
+  }
+  return times;
+}
+
+function scheduleFor(reminder, slot, hour, minute, now) {
   const rec = reminder.recurrence || { type: 'daily' };
   if (rec.type === 'daysOfWeek') return { on: { weekday: slot, hour, minute }, allowWhileIdle: true };
+  if (isMonthEnd(rec)) return { at: nextMonthEndTimes(reminder, hour, minute, now)[slot === SLOT_MAIN ? 0 : 1], allowWhileIdle: true };
   if (rec.type === 'monthlyDate') return { on: { day: rec.dayOfMonth, hour, minute }, allowWhileIdle: true };
   if (rec.type === 'once') {
     const [y, m, d] = rec.date.split('-').map(Number);
@@ -105,7 +125,8 @@ function scheduleFor(reminder, slot, hour, minute) {
 
 function slotsFor(reminder) {
   const rec = reminder.recurrence || { type: 'daily' };
-  return rec.type === 'daysOfWeek' ? (rec.daysOfWeek || []).map(dow => dow + 1) : [SLOT_MAIN];
+  if (rec.type === 'daysOfWeek') return (rec.daysOfWeek || []).map(dow => dow + 1);
+  return isMonthEnd(rec) ? [SLOT_MAIN, SLOT_MONTHLY_NEXT] : [SLOT_MAIN];
 }
 
 // -> { items: [{ id, reminderId, slot, fingerprint, notification }], problems: [{ reminderId, reason }] }
@@ -125,7 +146,7 @@ export function desiredNotifications({ reminders, settings, userName, now = new 
     }
     const sound = soundFor(hour, minute, settings);
     for (const slot of slotsFor(reminder)) {
-      const schedule = scheduleFor(reminder, slot, hour, minute);
+      const schedule = scheduleFor(reminder, slot, hour, minute, now);
       const fingerprint = fingerprintOf({
         v: SCHEME_VERSION, slot, name: reminder.name, userName: userName || '',
         schedule: schedule.at ? { at: schedule.at.toISOString() } : schedule.on, sound: Boolean(sound), badge: 1, action: REMINDER_ACTION_TYPE_ID,

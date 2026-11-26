@@ -16,6 +16,7 @@ import {
   createNotifier,
   SLOT_MAIN,
   SLOT_SNOOZE,
+  SLOT_MONTHLY_NEXT,
   SCHEME_KEY,
   SCHEME_VERSION,
   ALERT_BUDGET,
@@ -103,9 +104,9 @@ test('a weekly reminder uses one slot per day, matching the plugin weekday numbe
 // ---- what each alert contains ----
 
 test('daily, monthly, one-time and weekly alerts get the right schedule', () => {
-  const byType = Object.fromEntries(desired([rem(1), monthly(2, 31), once(3, '2026-12-25'), weekly(4, [6])]).items.map(i => [i.reminderId, i.notification]));
+  const byType = Object.fromEntries(desired([rem(1), monthly(2, 15), once(3, '2026-12-25'), weekly(4, [6])]).items.map(i => [i.reminderId, i.notification]));
   assert.deepEqual(byType[1].schedule, { on: { hour: 9, minute: 0 }, allowWhileIdle: true });
-  assert.deepEqual(byType[2].schedule, { on: { day: 31, hour: 9, minute: 0 }, allowWhileIdle: true });
+  assert.deepEqual(byType[2].schedule, { on: { day: 15, hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.deepEqual(byType[4].schedule, { on: { weekday: 7, hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.equal(byType[3].schedule.at.getFullYear(), 2026);
   assert.equal(byType[3].schedule.at.getMonth(), 11);
@@ -625,4 +626,45 @@ test('one-time reminder already marked done (early) has no alert left', async ()
   assert.equal(plugin.pendingIds().length, 1);
   await reconcile({ plugin, reminders: [done], settings: SETTINGS, now: NOW, random: () => 0 });
   assert.equal(plugin.pendingIds().length, 0);
+});
+
+// ---- Monthly on the 29th, 30th or 31st ----
+// iOS can only repeat "day N", which skips months that have no day N. These
+// fall back to the month's last day, so they get one-time alerts for the next
+// two occurrences, refreshed on every reconcile (launch, resume, any change).
+
+test('monthly 31st: the next two occurrences are one-time alerts, clamped to the last day of short months', () => {
+  const now = new Date(2027, 3, 10, 12, 0); // Apr 10 2027
+  const items = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items;
+  assert.deepEqual(items.map(i => i.slot), [SLOT_MAIN, SLOT_MONTHLY_NEXT]);
+  const ats = items.map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate(), d.getHours()]), [[4, 30, 9], [5, 31, 9]]);
+  assert.ok(items.every(i => !i.notification.schedule.on));
+});
+
+test('monthly 31st: once today\'s time has passed, the next two start next month', () => {
+  const now = new Date(2027, 3, 30, 10, 0); // Apr 30 2027, after 09:00
+  const ats = desiredNotifications({ reminders: [monthly(2, 31)], settings: SETTINGS, now, random: () => 0 }).items.map(i => i.notification.schedule.at);
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+});
+
+test('monthly 29th: Feb 28 in a common year, Feb 29 in a leap year', () => {
+  const at = (now) => desiredNotifications({ reminders: [monthly(2, 29)], settings: SETTINGS, now, random: () => 0 }).items[0].notification.schedule.at;
+  assert.deepEqual([at(new Date(2027, 1, 1)).getMonth(), at(new Date(2027, 1, 1)).getDate()], [1, 28]);
+  assert.deepEqual([at(new Date(2028, 1, 1)).getMonth(), at(new Date(2028, 1, 1)).getDate()], [1, 29]);
+});
+
+test('monthly 31st: reconcile moves on to the next occurrences after one fires (fingerprint changes)', async () => {
+  const plugin = fakePlugin();
+  await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 3, 10), random: () => 0 });
+  const r = await reconcile({ plugin, reminders: [monthly(2, 31)], settings: SETTINGS, now: new Date(2027, 4, 1), random: () => 0 });
+  assert.deepEqual(r.scheduled, [2]);
+  const ats = plugin.pendingIds().map(id => new Date(plugin.pending.get(String(id)).schedule.at));
+  assert.deepEqual(ats.map(d => [d.getMonth() + 1, d.getDate()]), [[5, 31], [6, 30]]);
+});
+
+test('monthly 28th and below still use one repeating alert', () => {
+  const items = desired([monthly(3, 28)]).items;
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].notification.schedule.on, { day: 28, hour: 9, minute: 0 });
 });

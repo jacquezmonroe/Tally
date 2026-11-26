@@ -12,7 +12,9 @@ export function appliesToday(reminder, date = new Date()) {
     return (recurrence.daysOfWeek || []).includes(date.getDay());
   }
   if (recurrence.type === 'monthlyDate') {
-    return recurrence.dayOfMonth === date.getDate();
+    // The 29th, 30th or 31st falls back to the last day of a shorter month.
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    return Math.min(recurrence.dayOfMonth, lastDay) === date.getDate();
   }
   if (recurrence.type === 'once') {
     return recurrence.date === todayKey(date);
@@ -83,7 +85,7 @@ export function nextOccurrence(reminder, date = new Date()) {
     const day = new Date(y, m - 1, d);
     return day > startOfDay(date) ? day : null;
   }
-  // A year of lookahead covers every pattern, including "the 31st" and "the 29th".
+  // A year of lookahead covers every pattern.
   for (let i = 1; i <= 366; i++) {
     const candidate = addDays(date, i);
     if (appliesToday(reminder, candidate)) return candidate;

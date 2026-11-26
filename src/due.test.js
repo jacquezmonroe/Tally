@@ -345,3 +345,32 @@ test('dateFromKey gives local midnight', () => {
   const d = dateFromKey('2024-03-09');
   assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()], [2024, 2, 9, 0]);
 });
+
+// ---- Monthly on the 29th, 30th or 31st falls back to the month's last day ----
+test('monthly 31st applies on the last day of short months, and only then', () => {
+  const r = makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: 31 } });
+  assert.equal(appliesToday(r, new Date(2027, 3, 30)), true);   // Apr 30
+  assert.equal(appliesToday(r, new Date(2027, 3, 29)), false);
+  assert.equal(appliesToday(r, new Date(2027, 1, 28)), true);   // Feb 28, common year
+  assert.equal(appliesToday(r, new Date(2028, 1, 29)), true);   // Feb 29, leap year
+  assert.equal(appliesToday(r, new Date(2028, 1, 28)), false);
+  assert.equal(appliesToday(r, new Date(2027, 4, 31)), true);   // May 31
+  assert.equal(appliesToday(r, new Date(2027, 4, 30)), false);
+});
+
+test('monthly 29th and 30th in February', () => {
+  const on = day => makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: day } });
+  assert.equal(appliesToday(on(29), new Date(2027, 1, 28)), true);
+  assert.equal(appliesToday(on(29), new Date(2028, 1, 29)), true);
+  assert.equal(appliesToday(on(29), new Date(2028, 1, 28)), false);
+  assert.equal(appliesToday(on(30), new Date(2027, 1, 28)), true);
+  assert.equal(appliesToday(on(30), new Date(2027, 3, 30)), true);
+});
+
+test('monthly 31st occurs in all 12 months', () => {
+  const r = makeReminder({ recurrence: { type: 'monthlyDate', dayOfMonth: 31 } });
+  const months = new Set();
+  let cursor = new Date(2026, 11, 31);
+  for (let i = 0; i < 12; i++) { cursor = nextOccurrence(r, cursor); months.add(cursor.getMonth()); }
+  assert.equal(months.size, 12);
+});
