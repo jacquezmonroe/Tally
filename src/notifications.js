@@ -47,6 +47,11 @@ export const SLOTS_PER_REMINDER = 16;
 export const SCHEME_VERSION = 2;
 export const SCHEME_KEY = 'tally-notification-scheme';
 export const SNOOZE_MINUTES = 10;
+// iOS keeps only the 64 soonest pending alerts per app and silently drops the
+// rest. A few slots stay free so a snooze never pushes a reminder's alert out.
+export const IOS_PENDING_LIMIT = 64;
+export const SNOOZE_RESERVE = 4;
+export const ALERT_BUDGET = IOS_PENDING_LIMIT - SNOOZE_RESERVE;
 
 // ---- IDs ----
 export function notificationId(reminderId, slot) {
@@ -162,6 +167,25 @@ export function buildSnooze({ reminder, settings, userName, now = new Date(), mi
   };
 }
 
+// Keeps whole reminders, oldest (lowest id) first, while they fit in the
+// budget; a later reminder that is smaller can still fit after one that
+// doesn't. -> { items, over: [reminderId] }
+export function fitAlertBudget(items, budget = ALERT_BUDGET) {
+  const byReminder = new Map();
+  for (const item of items) {
+    if (!byReminder.has(item.reminderId)) byReminder.set(item.reminderId, []);
+    byReminder.get(item.reminderId).push(item);
+  }
+  const kept = [];
+  const over = [];
+  for (const id of [...byReminder.keys()].sort((a, b) => a - b)) {
+    const group = byReminder.get(id);
+    if (kept.length + group.length <= budget) kept.push(...group);
+    else over.push(id);
+  }
+  return { items: kept, over };
+}
+
 // ---- Comparing what should exist with what does ----
 
 // A pending snooze is kept while its reminder still exists, hasn't been done
@@ -217,14 +241,17 @@ async function readPermission(plugin) {
 //   permission: 'granted' | 'denied' | 'prompt' | 'unavailable',
 //   ok: true when every reminder's alerts are as they should be,
 //   scheduled: [reminderId], unchanged: [reminderId], cancelled: [id],
-//   failed: [{ reminderId, reason: 'schedule_failed' | 'cancel_failed' | 'permission_denied' | 'unschedulable', message? }],
+//   failed: [{ reminderId, reason: 'schedule_failed' | 'cancel_failed' | 'permission_denied' | 'unschedulable' | 'over_limit', message? }],
 //   failedCancels: [id] (alerts that should have been removed but couldn't be),
 //   cleanupSkipped: true if the list of pending alerts couldn't be read
 // }
 export async function reconcile({ plugin, reminders, settings, userName, now = new Date(), random = Math.random }) {
   const result = { permission: 'unavailable', ok: true, scheduled: [], unchanged: [], cancelled: [], failed: [], failedCancels: [], cleanupSkipped: false };
-  const { items, problems } = desiredNotifications({ reminders, settings, userName, now, random });
+  const desired = desiredNotifications({ reminders, settings, userName, now, random });
+  const { problems } = desired;
+  const { items, over } = fitAlertBudget(desired.items);
   for (const p of problems) result.failed.push({ reminderId: p.reminderId, reason: p.reason });
+  for (const reminderId of over) result.failed.push({ reminderId, reason: 'over_limit' });
 
   result.permission = await readPermission(plugin);
   if (result.permission === 'unavailable') return { ...result, failed: [], ok: true };

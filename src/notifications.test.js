@@ -18,6 +18,8 @@ import {
   SLOT_SNOOZE,
   SCHEME_KEY,
   SCHEME_VERSION,
+  ALERT_BUDGET,
+  IOS_PENDING_LIMIT,
 } from './notifications.js';
 import { MAX_REMINDER_ID } from './storage.js';
 import { fakePlugin, fakePrefs } from './notifications.fake.js';
@@ -556,4 +558,59 @@ test('the engine touches no network or browser storage', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('./notifications.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '');
   for (const pattern of [/\bfetch\s*\(/, /XMLHttpRequest/, /localStorage/, /https?:\/\//, /document\./, /window\./]) assert.doesNotMatch(source, pattern);
+});
+
+// ---- iOS keeps only the 64 soonest pending alerts per app ----
+// iOS silently drops the rest. So the app schedules at most ALERT_BUDGET
+// (64 minus a few slots kept free for snoozes), keeps whole reminders in id
+// order, and reports the ones left out as 'over_limit'.
+
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+
+test('64-limit: the budget leaves room for snoozes under the iOS limit', () => {
+  assert.equal(IOS_PENDING_LIMIT, 64);
+  assert.ok(ALERT_BUDGET < IOS_PENDING_LIMIT);
+});
+
+test('64-limit: 10 every-day weekly reminders (70 alerts) never schedule past the budget and report the overflow', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: 10 }, (_, i) => weekly(i + 1, EVERY_DAY));
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.ok(plugin.pendingIds().length <= ALERT_BUDGET);
+  assert.equal(r.ok, false);
+  const over = r.failed.filter(f => f.reason === 'over_limit').map(f => f.reminderId);
+  assert.ok(over.length > 0);
+  // Older reminders keep their alerts; the newest ones are the ones left out.
+  assert.deepEqual(over, over.slice().sort((a, b) => a - b));
+  assert.ok(over.every(id => id > 10 - over.length));
+  // A reminder is either fully scheduled or not at all.
+  for (const id of over) assert.ok(!plugin.pendingIds().some(n => Math.floor(n / 16) === id));
+});
+
+test('64-limit: a small reminder after one that does not fit still gets its alert', async () => {
+  const plugin = fakePlugin();
+  const big = Array.from({ length: 8 }, (_, i) => weekly(i + 1, EVERY_DAY)); // 56
+  const reminders = [...big, weekly(9, EVERY_DAY), rem(10)];
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  const over = r.failed.filter(f => f.reason === 'over_limit').map(f => f.reminderId);
+  if (56 + 7 > ALERT_BUDGET) assert.deepEqual(over, [9]);
+  assert.ok(plugin.pendingIds().includes(notificationId(10, SLOT_MAIN)));
+});
+
+test('64-limit: exactly the budget is fine', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: ALERT_BUDGET }, (_, i) => rem(i + 1));
+  const r = await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(r.ok, true);
+  assert.equal(plugin.pendingIds().length, ALERT_BUDGET);
+});
+
+test('64-limit: an alert already scheduled for a reminder now over the limit is removed (so iOS cannot drop a different one)', async () => {
+  const plugin = fakePlugin();
+  const reminders = Array.from({ length: ALERT_BUDGET }, (_, i) => rem(i + 1));
+  await reconcile({ plugin, reminders, settings: SETTINGS, now: NOW, random: () => 0 });
+  const more = [...reminders, weekly(ALERT_BUDGET + 1, EVERY_DAY)];
+  const r = await reconcile({ plugin, reminders: more, settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.deepEqual(r.failed.map(f => [f.reminderId, f.reason]), [[ALERT_BUDGET + 1, 'over_limit']]);
+  assert.equal(plugin.pendingIds().length, ALERT_BUDGET);
 });
