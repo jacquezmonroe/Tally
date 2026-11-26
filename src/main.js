@@ -995,6 +995,7 @@ async function toggleTaken(id) {
   }
   reminder.takenDate = null;
   await saveReminders();
+  syncAlerts(); // an un-marked one-time reminder needs its alert back
   render();
 }
 

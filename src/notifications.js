@@ -109,13 +109,14 @@ function slotsFor(reminder) {
 }
 
 // -> { items: [{ id, reminderId, slot, fingerprint, notification }], problems: [{ reminderId, reason }] }
-// An expired one-time reminder has nothing left to alert about. A reminder
+// An expired or already-completed one-time reminder has nothing left to alert about. A reminder
 // that can't be given a valid id or time is reported, never thrown on.
 export function desiredNotifications({ reminders, settings, userName, now = new Date(), random = Math.random }) {
   const items = [];
   const problems = [];
   for (const reminder of reminders) {
     if (isExpiredOneTime(reminder, now)) continue;
+    if (reminder.recurrence && reminder.recurrence.type === 'once' && reminder.takenDate) continue; // done early: nothing left to alert about
     const [hour, minute] = parseTime(reminder.time || '');
     if (!Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isSafeInteger(reminder.id)
       || reminder.id < 1 || reminder.id > MAX_REMINDER_ID) {

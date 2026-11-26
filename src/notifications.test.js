@@ -614,3 +614,15 @@ test('64-limit: an alert already scheduled for a reminder now over the limit is 
   assert.deepEqual(r.failed.map(f => [f.reminderId, f.reason]), [[ALERT_BUDGET + 1, 'over_limit']]);
   assert.equal(plugin.pendingIds().length, ALERT_BUDGET);
 });
+
+test('one-time reminder already marked done (early) has no alert left', async () => {
+  const plugin = fakePlugin();
+  const done = rem(1, { time: '18:00', recurrence: { type: 'once', date: TODAY }, takenDate: TODAY });
+  const notDone = rem(2, { time: '18:00', recurrence: { type: 'once', date: TODAY } });
+  assert.deepEqual(desiredNotifications({ reminders: [done, notDone], settings: SETTINGS, now: NOW, random: () => 0 }).items.map(i => i.reminderId), [2]);
+  // And one scheduled before it was marked done is removed by the next reconcile.
+  await reconcile({ plugin, reminders: [{ ...done, takenDate: null }], settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(plugin.pendingIds().length, 1);
+  await reconcile({ plugin, reminders: [done], settings: SETTINGS, now: NOW, random: () => 0 });
+  assert.equal(plugin.pendingIds().length, 0);
+});
