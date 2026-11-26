@@ -122,8 +122,15 @@ function scheduleFor(reminder, slot, hour, minute, now) {
   if (isMonthEnd(rec) && slot !== SLOT_MAIN) return { at: nextShortMonthTimes(reminder, hour, minute, now)[slot === SLOT_MONTHLY_NEXT ? 0 : 1], allowWhileIdle: true };
   if (rec.type === 'monthlyDate') return { on: { day: rec.dayOfMonth, hour, minute }, allowWhileIdle: true };
   if (rec.type === 'once') {
+    // A calendar date with no zone fires at this wall time wherever the phone
+    // is (an `at` time becomes a fixed-instant countdown in the plugin). The
+    // exception is a time skipped by spring-forward, which a calendar alert may
+    // never match: that keeps the fixed instant, which moves forward the same
+    // way isOverdue does (02:30 -> 03:30).
     const [y, m, d] = rec.date.split('-').map(Number);
-    return { at: new Date(y, m - 1, d, hour, minute), allowWhileIdle: true };
+    const at = new Date(y, m - 1, d, hour, minute);
+    if (at.getHours() !== hour || at.getMinutes() !== minute) return { at, allowWhileIdle: true };
+    return { on: { year: y, month: m, day: d, hour, minute }, allowWhileIdle: true };
   }
   return { on: { hour, minute }, allowWhileIdle: true };
 }

@@ -111,11 +111,41 @@ test('daily, monthly, one-time and weekly alerts get the right schedule', () => 
   assert.deepEqual(byType[1].schedule, { on: { hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.deepEqual(byType[2].schedule, { on: { day: 15, hour: 9, minute: 0 }, allowWhileIdle: true });
   assert.deepEqual(byType[4].schedule, { on: { weekday: 7, hour: 9, minute: 0 }, allowWhileIdle: true });
-  assert.equal(byType[3].schedule.at.getFullYear(), 2026);
-  assert.equal(byType[3].schedule.at.getMonth(), 11);
-  assert.equal(byType[3].schedule.at.getDate(), 25);
-  assert.equal(byType[3].schedule.at.getHours(), 9);
+  // A one-time alert is a calendar date and wall-clock time (month is 1-12, as iOS counts it).
+  assert.deepEqual(byType[3].schedule, { on: { year: 2026, month: 12, day: 25, hour: 9, minute: 0 }, allowWhileIdle: true });
 });
+
+// ---- One-time alerts follow the phone's time zone ----
+// An `at` time becomes an iOS countdown (a fixed instant), so after flying it
+// fired at the OLD zone's wall time until the app was opened. A calendar date
+// with no zone fires at that wall time wherever the phone is.
+const ORIGINAL_TZ = process.env.TZ;
+function inZone(zone, fn) {
+  process.env.TZ = zone;
+  try { return fn(); } finally { if (ORIGINAL_TZ === undefined) delete process.env.TZ; else process.env.TZ = ORIGINAL_TZ; }
+}
+
+test('one-time: the same 09:00 calendar alert in New York and in Los Angeles, with no zone in it', () => {
+  const now = new Date('2026-11-26T15:00:00Z');
+  const ny = inZone('America/New_York', () => desiredNotifications({ reminders: [once(1, '2026-12-01')], settings: SETTINGS, now, random: () => 0 }).items[0]);
+  const la = inZone('America/Los_Angeles', () => desiredNotifications({ reminders: [once(1, '2026-12-01')], settings: SETTINGS, now, random: () => 0 }).items[0]);
+  assert.deepEqual(ny.notification.schedule, { on: { year: 2026, month: 12, day: 1, hour: 9, minute: 0 }, allowWhileIdle: true });
+  assert.deepEqual(la.notification.schedule, ny.notification.schedule);
+  assert.equal(la.fingerprint, ny.fingerprint, 'nothing to reschedule after flying');
+});
+
+test('one-time: a time skipped by spring-forward keeps a fixed-instant alert, moved forward like Overdue (02:30 -> 03:30)', () => inZone('America/New_York', () => {
+  const r = once(1, '2027-03-14', { time: '02:30' });
+  const { schedule } = desiredNotifications({ reminders: [r], settings: SETTINGS, now: new Date(2027, 2, 13, 12, 0), random: () => 0 }).items[0].notification;
+  assert.equal(schedule.on, undefined);
+  assert.deepEqual([schedule.at.getHours(), schedule.at.getMinutes()], [3, 30]);
+}));
+
+test('one-time: a time in the repeated fall-back hour is a normal calendar alert', () => inZone('America/New_York', () => {
+  const r = once(1, '2026-11-01', { time: '01:30' });
+  const { schedule } = desiredNotifications({ reminders: [r], settings: SETTINGS, now: new Date(2026, 9, 31, 12, 0), random: () => 0 }).items[0].notification;
+  assert.deepEqual(schedule.on, { year: 2026, month: 11, day: 1, hour: 1, minute: 30 });
+}));
 
 test('every alert carries the title, badge, action button and its reminder id plus fingerprint', () => {
   for (const { notification, reminderId, fingerprint } of desired([rem(8), weekly(9, [2])]).items) {
