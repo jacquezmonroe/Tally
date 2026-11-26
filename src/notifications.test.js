@@ -668,3 +668,38 @@ test('monthly 28th and below still use one repeating alert', () => {
   assert.equal(items.length, 1);
   assert.deepEqual(items[0].notification.schedule.on, { day: 28, hour: 9, minute: 0 });
 });
+
+// ---- A snooze belongs to today's occurrence ----
+const snoozePending = (reminderId, at) => ({ id: notificationId(reminderId, SLOT_SNOOZE), extra: { reminderId, fp: 'snooze' }, schedule: { at: at.toISOString() } });
+
+test('snooze: cancelled when the reminder was edited to a day it no longer applies', () => {
+  const now = new Date(2026, 9, 31, 9, 5);
+  const plan = planChanges({ desired: [], pending: [snoozePending(1, new Date(2026, 9, 31, 9, 15))], reminders: [once(1, '2026-12-10')], now });
+  assert.deepEqual(plan.toCancel, [notificationId(1, SLOT_SNOOZE)]);
+  const weeklyOther = weekly(2, [1]); // Oct 31 2026 is a Saturday
+  const plan2 = planChanges({ desired: [], pending: [snoozePending(2, new Date(2026, 9, 31, 9, 15))], reminders: [weeklyOther], now });
+  assert.deepEqual(plan2.toCancel, [notificationId(2, SLOT_SNOOZE)]);
+});
+
+test('snooze: kept for a reminder due today, an overdue one-time reminder, and across midnight', () => {
+  const now = new Date(2026, 9, 31, 9, 5);
+  const keep = (reminder, at, at2 = now) => planChanges({ desired: [], pending: [snoozePending(reminder.id, at)], reminders: [reminder], now: at2 }).keptSnoozes.length === 1;
+  assert.ok(keep(rem(1), new Date(2026, 9, 31, 9, 15)));
+  assert.ok(keep(once(3, '2026-10-29'), new Date(2026, 9, 31, 9, 15))); // listed under Overdue
+  // Snoozed at 23:55 to 00:05: still Oct 31's occurrence while it is Oct 31...
+  assert.ok(keep(rem(4, { time: '23:50' }), new Date(2026, 10, 1, 0, 5), new Date(2026, 9, 31, 23, 56)));
+  // ...and still wanted just after midnight, before it fires.
+  assert.ok(keep(rem(5, { time: '23:50' }), new Date(2026, 10, 1, 0, 5), new Date(2026, 10, 1, 0, 1)));
+});
+
+test('snooze: a Saturday-only reminder snoozed past midnight still fires early Sunday (the snooze records its day)', () => {
+  const sat = weekly(6, [6], { time: '23:50' });
+  const snooze = buildSnooze({ reminder: sat, settings: SETTINGS, userName: null, now: new Date(2026, 9, 31, 23, 55) });
+  assert.equal(snooze.extra.day, '2026-10-31');
+  const pending = [{ id: snooze.id, extra: snooze.extra, schedule: { at: snooze.schedule.at.toISOString() } }];
+  const plan = planChanges({ desired: [], pending, reminders: [sat], now: new Date(2026, 10, 1, 0, 2) });
+  assert.deepEqual(plan.keptSnoozes, [snooze.id]);
+  // Taken for Saturday (its day), the snooze is dropped even after midnight.
+  const plan2 = planChanges({ desired: [], pending, reminders: [{ ...sat, takenDate: '2026-10-31' }], now: new Date(2026, 10, 1, 0, 2) });
+  assert.deepEqual(plan2.toCancel, [snooze.id]);
+});

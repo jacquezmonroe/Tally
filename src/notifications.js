@@ -35,7 +35,7 @@
 // Quiet hours: the alert still arrives on time, silently (no `sound`).
 
 import { getNotificationBody } from './personalization.js';
-import { isExpiredOneTime, appliesToday } from './due.js';
+import { isExpiredOneTime, appliesToday, isOverdueOneTime, dateFromKey } from './due.js';
 import { isWithinQuietHours } from './settings.js';
 import { todayKey } from './streak.js';
 import { reminderActionTypes, REMINDER_ACTION_TYPE_ID } from './notificationActions.js';
@@ -185,7 +185,7 @@ export function buildSnooze({ reminder, settings, userName, now = new Date(), mi
     ...(sound ? { sound } : {}),
     badge: 1,
     actionTypeId: REMINDER_ACTION_TYPE_ID,
-    extra: { reminderId: reminder.id, fp: 'snooze' },
+    extra: { reminderId: reminder.id, fp: 'snooze', day: todayKey(now) }, // the day this snooze belongs to
   };
 }
 
@@ -210,13 +210,21 @@ export function fitAlertBudget(items, budget = ALERT_BUDGET) {
 
 // ---- Comparing what should exist with what does ----
 
-// A pending snooze is kept while its reminder still exists, hasn't been done
-// today, and the snooze time is still ahead. Anything else is cancelled.
+// A pending snooze is kept while its reminder still exists, still applies on
+// the day the snooze belongs to (it may have been edited to another day since),
+// hasn't been done for that day, and the snooze time is still ahead. Anything
+// else is cancelled. Snoozes from before the day was recorded use today.
 function snoozeStillWanted(pendingItem, remindersById, now) {
   const decoded = decodeNotificationId(pendingItem.id);
   if (!decoded || decoded.slot !== SLOT_SNOOZE) return false;
   const reminder = remindersById.get(decoded.reminderId);
-  if (!reminder || reminder.takenDate === todayKey(now)) return false;
+  const recorded = pendingItem.extra && pendingItem.extra.day;
+  const day = typeof recorded === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(recorded) ? recorded : todayKey(now);
+  if (!reminder || reminder.takenDate === day) return false;
+  const isOnce = reminder.recurrence && reminder.recurrence.type === 'once';
+  if (isOnce && reminder.takenDate) return false; // a one-time reminder done on any day is finished
+  const dayDate = dateFromKey(day);
+  if (!appliesToday(reminder, dayDate) && !isOverdueOneTime(reminder, dayDate)) return false;
   const at = pendingItem.schedule?.at ? new Date(pendingItem.schedule.at) : null;
   return !at || Number.isNaN(at.getTime()) || at > now;
 }
