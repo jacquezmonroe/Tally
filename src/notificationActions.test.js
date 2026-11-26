@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { checkStaleStreaks } from './streak.js';
 import {
   REMINDER_ACTION_TYPE_ID,
   MARK_TAKEN_ACTION_ID,
@@ -149,4 +150,40 @@ test('Mark Taken on a snooze for a day already done is ignored', () => {
 test('Mark Taken on a snooze dated in the future is treated like a plain press', () => {
   const r = pill({ takenDate: '2026-11-25', lastCompletedDate: '2026-11-25' });
   assert.deepEqual(resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10), { snoozeDay: '2026-11-27' }), resolveMarkTaken(r, new Date(2026, 10, 26, 7, 10)));
+});
+
+// ---- A held Mark Taken press, handled after the launch stale-streak check ----
+// iOS can hold a press made with the app closed until the next launch, and
+// init() runs checkStaleStreaks before any held press. With grace None the
+// check zeroes the streak (yesterday looks missed); the press then shows
+// yesterday WAS taken, so the streak must come back whole.
+test('a press for yesterday handled after the launch reset restores the streak (grace None)', () => {
+  let r = pill({ time: '21:00', takenDate: '2026-11-23', lastCompletedDate: '2026-11-23', currentStreak: 10, longestStreak: 10 });
+  const wed = new Date(2026, 10, 25, 8, 0);
+  [r] = checkStaleStreaks([r], '2026-11-25', 0);
+  assert.equal(r.currentStreak, 0);
+  const decision = resolveMarkTaken(r, wed);
+  assert.deepEqual(decision, { kind: 'credit_past', day: '2026-11-24' });
+  r = creditPastDay(r, decision.day, 0);
+  assert.equal(r.currentStreak, 11);
+  assert.equal(r.longestStreak, 11);
+  assert.equal(r.lastCompletedDate, '2026-11-24');
+  assert.equal(r.streakBeforeReset, undefined, 'the note is used up');
+});
+
+test('a press that does not bridge the gap leaves a reset streak broken', () => {
+  // Last taken Saturday; Sunday and Monday missed; press for Tuesday handled Wednesday.
+  let r = pill({ time: '21:00', takenDate: '2026-11-21', lastCompletedDate: '2026-11-21', currentStreak: 10, longestStreak: 10 });
+  [r] = checkStaleStreaks([r], '2026-11-25', 0);
+  r = creditPastDay(r, '2026-11-24', 0);
+  assert.equal(r.currentStreak, 1);
+  assert.equal(r.longestStreak, 10);
+});
+
+test('a second launch does not overwrite the pre-reset streak with 0', () => {
+  let r = pill({ lastCompletedDate: '2026-11-23', currentStreak: 10, longestStreak: 10 });
+  [r] = checkStaleStreaks([r], '2026-11-25', 0);
+  [r] = checkStaleStreaks([r], '2026-11-25', 0);
+  r = creditPastDay(r, '2026-11-24', 0);
+  assert.equal(r.currentStreak, 11);
 });

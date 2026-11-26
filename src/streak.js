@@ -108,8 +108,11 @@ export function checkStaleStreaks(reminders, today = todayKey(), graceOccurrence
     if (!reminder.lastCompletedDate || reminder.lastCompletedDate >= today) return reminder;
 
     const withinGrace = getGraceWindow(reminder, today, graceOccurrences).includes(reminder.lastCompletedDate);
-    if (!withinGrace) {
-      return { ...reminder, currentStreak: 0 };
+    if (!withinGrace && reminder.currentStreak !== 0) {
+      // The count is kept aside: a Mark Taken press held by iOS can still show
+      // the "missed" day was taken (see creditPastDay in notificationActions.js).
+      const streakBeforeReset = { currentStreak: reminder.currentStreak, lastCompletedDate: reminder.lastCompletedDate };
+      return { ...reminder, currentStreak: 0, streakBeforeReset };
     }
     return reminder;
   });

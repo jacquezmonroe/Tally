@@ -88,7 +88,15 @@ export function resolveMarkTaken(reminder, now = new Date(), { snoozeDay = null 
 
 // Records a press for an earlier day: the streak counts that day, and
 // takenDate moves to it only if nothing later is already recorded.
+// If the launch stale-streak check zeroed the streak because this very day
+// looked missed, the count from before that reset is used again, so the
+// streak continues instead of restarting at 1.
 export function creditPastDay(reminder, day, graceOccurrences) {
-  const updated = markReminderTaken(reminder, day, graceOccurrences);
+  const { streakBeforeReset: before, ...rest } = reminder;
+  const usable = before && typeof before === 'object' && rest.currentStreak === 0
+    && before.lastCompletedDate === rest.lastCompletedDate && Number.isSafeInteger(before.currentStreak) && before.currentStreak > 0;
+  const start = usable ? { ...rest, currentStreak: before.currentStreak } : reminder;
+  let updated = markReminderTaken(start, day, graceOccurrences);
+  if (updated === start) updated = reminder; // nothing credited: leave the streak as it was
   return { ...updated, takenDate: reminder.takenDate && reminder.takenDate > day ? reminder.takenDate : day };
 }
