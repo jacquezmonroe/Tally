@@ -481,9 +481,9 @@ test('settings: an unusable value is backed up, reset in memory, rewritten with 
 });
 
 test('settings: a missing or valid value writes nothing', async () => {
-  const prefs = fakePrefs({ 'tally-reminder-defaults': json({ gracePeriodHours: 12, soundEnabled: true, defaultColor: null }) });
+  const prefs = fakePrefs({ 'tally-reminder-defaults': json({ gracePeriodHours: 24, soundEnabled: true, defaultColor: null }) });
   const storage = storageFor(prefs);
-  assert.equal((await storage.loadSetting('tally-reminder-defaults', parseReminderDefaults)).value.gracePeriodHours, 12);
+  assert.equal((await storage.loadSetting('tally-reminder-defaults', parseReminderDefaults)).value.gracePeriodHours, 24);
   assert.equal((await storage.loadSetting('tally-quiet-hours', parseQuietHours)).reset, false);
   assert.deepEqual(prefs.log, []);
 });
@@ -535,4 +535,15 @@ test('describeNotice: set-aside or unreadable data says where to copy it', () =>
   assert.match(describeNotice({ recovered: 3, quarantined: 2 }), /Settings → Privacy/);
   assert.match(describeNotice({ unreadable: true }), /Settings → Privacy/);
   assert.doesNotMatch(describeNotice({ recovered: 1, quarantined: 0, repaired: 1 }), /Privacy/);
+});
+
+// The old "12h" grace option always behaved exactly like "None" (see
+// graceOccurrencesForHours), so it was removed. A saved 12 quietly reads as 0:
+// the same behavior as before, and no "setting was reset" notice.
+test('settings: a saved 12h grace period reads as None (0), with no reset notice and nothing written', async () => {
+  assert.deepEqual(parseReminderDefaults(json({ gracePeriodHours: 12 })), { value: { ...DEFAULT_REMINDER_DEFAULTS, gracePeriodHours: 0 }, reset: false });
+  const prefs = fakePrefs({ 'tally-reminder-defaults': json({ gracePeriodHours: 12, soundEnabled: true, defaultColor: null }) });
+  const loaded = await storageFor(prefs).loadSetting('tally-reminder-defaults', parseReminderDefaults);
+  assert.equal(loaded.value.gracePeriodHours, 0);
+  assert.deepEqual(prefs.log, []);
 });

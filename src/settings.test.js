@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   rootFontSizeForSystemBody,
+  GRACE_PERIOD_OPTIONS,
   ACCENT_THEMES,
   DEFAULT_ACCENT_THEME,
   getAccentTheme,
@@ -143,4 +144,8 @@ test('rootFontSizeForSystemBody: follows larger and smaller text sizes, includin
 
 test('rootFontSizeForSystemBody: unusable measurements fall back to the designed 16px', () => {
   for (const bad of [0, -4, NaN, undefined, 'x', Infinity]) assert.equal(rootFontSizeForSystemBody(bad), 16);
+});
+
+test('grace options: no "12h", which behaved exactly like None', () => {
+  assert.deepEqual(GRACE_PERIOD_OPTIONS, [0, 24, 48]);
 });

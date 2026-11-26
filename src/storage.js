@@ -19,6 +19,7 @@
 import {
   normalizeReminderColor,
   GRACE_PERIOD_OPTIONS,
+  LEGACY_GRACE_HOURS_AS_NONE,
   DEFAULT_QUIET_HOURS,
   DEFAULT_REMINDER_DEFAULTS,
 } from './settings.js';
@@ -257,6 +258,7 @@ export function parseReminderDefaults(raw) {
   let reset = false;
   const p = parsed.value;
   if (GRACE_PERIOD_OPTIONS.includes(p.gracePeriodHours)) value.gracePeriodHours = p.gracePeriodHours;
+  else if (p.gracePeriodHours === LEGACY_GRACE_HOURS_AS_NONE) value.gracePeriodHours = 0; // same behavior, no reset notice
   else if ('gracePeriodHours' in p) reset = true;
   if (typeof p.soundEnabled === 'boolean') value.soundEnabled = p.soundEnabled;
   else if ('soundEnabled' in p) reset = true;

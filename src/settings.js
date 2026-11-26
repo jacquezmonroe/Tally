@@ -65,7 +65,10 @@ export function resolveScheme(mode, systemPrefersDark) {
 }
 
 // ---- Reminder defaults ----
-export const GRACE_PERIOD_OPTIONS = [0, 12, 24, 48];
+// (A "12h" option existed, but behaved exactly like None — see
+// graceOccurrencesForHours — so it was removed; a saved 12 reads as 0.)
+export const GRACE_PERIOD_OPTIONS = [0, 24, 48];
+export const LEGACY_GRACE_HOURS_AS_NONE = 12;
 
 // defaultColor is a REMINDER_COLORS id, or null to follow the app's accent
 // theme (which is what every reminder did before per-reminder colors existed).
